@@ -1,0 +1,42 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "**My Thought Process on Your Request**\n\nAh, I see you've presented me with a straightforward request, and my internal process immediately focuses on the core operation required. My first thought is to dissect the input: you're asking me to perform an arithmetic operation, specifically addition, on two discrete numerical values. These values are clearly identified as integers: 5 and 3.\n\nWith that identification complete, my next step is to recall the fundamental principles of arithmetic. Addition, in this context, is the process of combining these two quantities to find their total. So, I mentally execute the operation: 5 + 3.\n\nThe result of this calculation is an integer, 8. My final consideration, then, is to present this outcome in a manner that is both accurate and directly addresses your prompt. Clarity is paramount, so I will ensure the answer is presented unambiguously.\n\n",
+            "thought": true
+          },
+          {
+            "text": "5 + 3 = 8",
+            "thoughtSignature": "AY89a19cna265oqwHxl612Ft3YH4X2Dck5ShtswQxwQh1Ms1kRhgTK3wTYRQx6i9+usL2yCOsGsD4wPDeRcecWXgyBE7TKg+Wi9Ul3KeKkwhwn8gYr4oOIhVUD2lGdv9jo+rItBQN450xW3F/MPsrv45Ikz/WXHUJXcb2wMcoRxhx+KjyNVLA57i0xZZGgTaj/lS6SfJ9l/+BKE="
+          }
+        ]
+      },
+      "finishReason": "STOP"
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 8,
+    "candidatesTokenCount": 7,
+    "totalTokenCount": 50,
+    "trafficType": "ON_DEMAND",
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 8
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 7
+      }
+    ],
+    "thoughtsTokenCount": 35
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "createTime": "2026-05-06T23:56:35.325070Z",
+  "responseId": "M9X7ac7rE-PlmLAPl7GUgAo"
+}

@@ -1,0 +1,600 @@
+# ported from lib/ruby_llm/chat.rb @ ruby_llm 1.15.0
+#
+# The Chat builder + completion flow: a chainable conversation object that
+# accumulates messages, tools, and per-call options, then drives the provider
+# completion pipeline (Provider#complete) and the tool-call loop.
+#
+# == Divergences from ruby_llm (documented) ==
+#
+# * Tools are a `Hash(String, Tool)` keyed by the tool's `name` (a String), not
+#   ruby_llm's `Symbol`-keyed hash (symbols-as-runtime-data → String, design §11).
+#   `with_tool` accepts a `Tool` instance only — ruby_llm also accepts a tool
+#   *class* (`tool.is_a?(Class) ? tool.new : tool`); Crystal cannot `.new` an
+#   arbitrary `Tool.class` with no shared zero-arg constructor contract, so the
+#   caller instantiates. (DynamicTool / macro tools both produce instances.)
+#
+# * Callbacks: the **modern** additive form is ported —
+#   `before_message`/`after_message`/`before_tool_call`/`after_tool_result`, each
+#   stacking blocks in `@callbacks`. The **legacy** single-slot `on_new_message` /
+#   `on_end_message` / `on_tool_call` / `on_tool_result` aliases (deprecated in
+#   ruby_llm, removed in 2.0) are DEFERRED — they require the deprecator warning
+#   plumbing and add a parallel `@on` dispatch path for no new behaviour. Noted in
+#   the return deferrals.
+#
+# * `complete` has no `block_given?`: it is two overloads (sync returning Message,
+#   streaming taking `&block : CrystalLLM::Chunk ->`) mirroring Provider#complete. The
+#   completion loop (`complete_once` / `handle_tool_calls`) is duplicated across
+#   the two so the streaming block threads through correctly.
+#
+# * Instrumentation (`instrument_completion` / `RubyLLM.instrument`) is DEFERRED
+#   (the instrumentation port hasn't landed). `complete` calls `complete_once`
+#   directly. Noted in deferrals.
+#
+# * `with_schema` accepts a raw json-schema (`JSON::Any` / `Hash(String,
+#   JSON::Any)`) OR a `CrystalLLM::Schema` instance (→ `to_json_schema`). The
+#   normalized payload is the `{name, schema, strict}` envelope `Provider`'s
+#   render_payload reads via `as_h?`. The typed `ask_as(T)` / `with_schema(T)`
+#   class hatch is DEFERRED (needs the typed-deserialization layer).
+#
+# * Cost aggregation (`Chat#cost` → `Cost.aggregate`) is DEFERRED (Cost.aggregate
+#   over a message list isn't ported). Noted in deferrals.
+#
+# * `tool_prefs` (`:choice` / `:calls`): the per-call tool-choice preference and
+#   the tool-call *limit* are ported as Chat state. ruby_llm's `:choice` is NOT
+#   yet forwarded to the provider (Provider#render_payload omits `tool_prefs:` —
+#   that hook firms up later, see provider_completion.cr's header). The `:calls`
+#   limit ("one" vs "many") IS enforced in the tool loop here. Noted in deferrals.
+#
+# * `@context` / `@config`: a Chat resolves its provider through the (optional)
+#   Context's config, falling back to `CrystalLLM.config`. `with_context` re-binds
+#   the provider with `assume_exists: true` (ruby_llm parity).
+require "json"
+require "./message"
+require "./content"
+require "./tool"
+require "./tool_call"
+require "./thinking"
+require "./schema"
+require "./models"
+require "./model/info"
+require "./provider"
+require "./provider_completion"
+require "./configuration"
+require "./context"
+require "./error"
+
+module CrystalLLM
+  # Represents a conversation with an AI model.
+  class Chat
+    include Enumerable(Message)
+
+    getter model : Model::Info
+    getter messages : Array(Message)
+    getter tools : Hash(String, Tool)
+    # Tool-choice preference state. `:choice` (a String? tool name / "auto" /
+    # "none" / "required") is held but not yet forwarded to the provider (see
+    # divergences). `:calls` is the call limit as a String? ("one"/"many").
+    getter tool_prefs : Hash(String, String?)
+    getter params : Hash(String, JSON::Any)
+    getter headers : Hash(String, String)
+    getter schema : JSON::Any?
+
+    @context : Context?
+    @config : Configuration
+    @provider : Provider
+    @temperature : Float64?
+    @thinking : Thinking::Config?
+
+    # Stacked, additive callbacks (modern form). Keyed by callback name; each
+    # value is a list of blocks. ruby_llm uses a `Hash.new { [] }` default-proc;
+    # Crystal needs explicit initialization per key.
+    @callbacks : Hash(String, Array(Message ->))
+    @tool_call_callbacks : Hash(String, Array(ToolCall ->))
+    @tool_result_callbacks : Hash(String, Array(ToolResult ->))
+
+    def initialize(model : String? = nil, provider : String? = nil,
+                   assume_model_exists : Bool = false, context : Context? = nil)
+      if assume_model_exists && !provider
+        raise ArgumentError.new("Provider must be specified if assume_model_exists is true")
+      end
+
+      @context = context
+      @config = context.try(&.config) || CrystalLLM.config
+      model_id = model || @config.default_model
+
+      # Initialize all collection/option ivars BEFORE resolving the model, so the
+      # `with_model` call (which Crystal's nil-analysis treats as able to touch any
+      # ivar) sees a fully-initialized object. @model/@provider are assigned by
+      # `resolve_model` below.
+      @temperature = nil
+      @messages = [] of Message
+      @tools = {} of String => Tool
+      @tool_prefs = {"choice" => nil, "calls" => nil} of String => String?
+      @params = {} of String => JSON::Any
+      @headers = {} of String => String
+      @schema = nil
+      @thinking = nil
+      @callbacks = Hash(String, Array(Message ->)).new
+      @tool_call_callbacks = Hash(String, Array(ToolCall ->)).new
+      @tool_result_callbacks = Hash(String, Array(ToolResult ->)).new
+
+      @model, @provider = resolve_model(model_id, provider, assume_model_exists)
+    end
+
+    # Resolves a model id → {Model::Info, Provider instance}. Shared by initialize
+    # and `with_model` (the latter assigns the result + returns self).
+    private def resolve_model(model_id : String, provider : String?,
+                              assume_exists : Bool) : {Model::Info, Provider}
+      info = Models.resolve(model_id, provider: provider, assume_exists: assume_exists)
+
+      provider_slug = provider || info.provider
+      raise ModelNotFoundError.new("Could not determine provider for model #{model_id.inspect}") unless provider_slug
+
+      provider_class = Provider.resolve(provider_slug)
+      unless provider_class
+        raise ModelNotFoundError.new(
+          "Unknown provider: #{provider_slug.inspect}. " \
+          "Register it with `CrystalLLM::Provider.register`."
+        )
+      end
+
+      {info, provider_class.new(@config)}
+    end
+
+    # ---- Asking ------------------------------------------------------------
+
+    # Adds a user message and runs a completion (sync). `with` carries attachments.
+    def ask(message : String? = nil, with attachments : Attachable? = nil) : Message
+      add_message(role: Role::User, content: build_content(message, attachments))
+      complete
+    end
+
+    # Streaming overload: yields each Chunk to the block.
+    def ask(message : String? = nil, with attachments : Attachable? = nil, &block : CrystalLLM::Chunk ->) : Message
+      add_message(role: Role::User, content: build_content(message, attachments))
+      complete(&block)
+    end
+
+    # `say` is an alias for `ask` (ruby_llm: `alias say ask`).
+    def say(message : String? = nil, with attachments : Attachable? = nil) : Message
+      ask(message, with: attachments)
+    end
+
+    def say(message : String? = nil, with attachments : Attachable? = nil, &block : CrystalLLM::Chunk ->) : Message
+      ask(message, with: attachments, &block)
+    end
+
+    # ---- Chainable builders ------------------------------------------------
+
+    # Sets/append a system instruction. `append: true` keeps existing system
+    # messages and adds another; the default replaces them. (ruby_llm's
+    # `replace:` legacy keyword is folded into `append:` — append is the modern
+    # name; pass `append: true` to add.)
+    def with_instructions(instructions : String, append : Bool = false) : self
+      if append
+        append_system_instruction(instructions)
+      else
+        replace_system_instruction(instructions)
+      end
+      self
+    end
+
+    # Registers a tool, keyed by its `name`. `choice`/`calls` update tool_prefs.
+    def with_tool(tool : Tool?, choice : String? = nil, calls : String? = nil) : self
+      if t = tool
+        @tools[t.name] = t
+      end
+      update_tool_options(choice, calls)
+      self
+    end
+
+    # Registers many tools. `replace: true` clears existing tools first.
+    def with_tools(*tools : Tool?, replace : Bool = false,
+                   choice : String? = nil, calls : String? = nil) : self
+      @tools.clear if replace
+      tools.each { |tool| with_tool(tool) if tool }
+      update_tool_options(choice, calls)
+      self
+    end
+
+    # Resolves the model id → Model::Info + provider class, and instantiates the
+    # provider with the current config. ruby_llm's `Models.resolve` returns the
+    # provider *instance* too; this port resolves the Model::Info via
+    # `Models.resolve` and the Provider class via `Provider.resolve`, then
+    # instantiates it with `@config`.
+    def with_model(model_id : String, provider : String? = nil, assume_exists : Bool = false) : self
+      @model, @provider = resolve_model(model_id, provider, assume_exists)
+      self
+    end
+
+    def with_temperature(temperature : Float64) : self
+      @temperature = temperature
+      self
+    end
+
+    # Enables thinking. Requires `effort` or `budget` (ruby_llm parity).
+    def with_thinking(effort : String? = nil, budget : Int32? = nil) : self
+      if effort.nil? && budget.nil?
+        raise ArgumentError.new("with_thinking requires effort or budget")
+      end
+      @thinking = Thinking::Config.new(effort: effort, budget: budget)
+      self
+    end
+
+    # Re-binds the chat to a new Context's config, re-resolving the provider.
+    def with_context(context : Context) : self
+      @context = context
+      @config = context.config
+      slug = @provider.slug
+      with_model(@model.id || @config.default_model, provider: slug, assume_exists: true)
+      self
+    end
+
+    # Replaces the per-call params merged over the provider payload.
+    def with_params(params : Hash(String, JSON::Any)) : self
+      @params = params
+      self
+    end
+
+    # Replaces the per-call request headers.
+    def with_headers(headers : Hash(String, String)) : self
+      @headers = headers
+      self
+    end
+
+    # Sets the structured-output schema. Accepts a `CrystalLLM::Schema` instance
+    # (→ `to_json_schema`) or a raw json-schema (`JSON::Any` / `Hash`). The result
+    # is normalized to the `{name, schema, strict}` envelope.
+    def with_schema(schema : Schema) : self
+      @schema = normalize_schema_payload(schema.to_json_schema)
+      self
+    end
+
+    def with_schema(schema : Hash(String, JSON::Any)) : self
+      @schema = normalize_schema_payload(schema)
+      self
+    end
+
+    def with_schema(schema : JSON::Any) : self
+      @schema = normalize_schema_payload(schema.as_h?)
+      self
+    end
+
+    # ---- Callbacks (modern, additive) --------------------------------------
+
+    def before_message(&block : Message ->) : self
+      add_message_callback("before_message", &block)
+    end
+
+    def after_message(&block : Message ->) : self
+      add_message_callback("after_message", &block)
+    end
+
+    def before_tool_call(&block : ToolCall ->) : self
+      (@tool_call_callbacks["before_tool_call"] ||= [] of ToolCall ->) << block
+      self
+    end
+
+    def after_tool_result(&block : ToolResult ->) : self
+      (@tool_result_callbacks["after_tool_result"] ||= [] of ToolResult ->) << block
+      self
+    end
+
+    # ---- Enumerable + message access ---------------------------------------
+
+    def each(& : Message ->) : Nil
+      @messages.each { |message| yield message }
+    end
+
+    # Appends a Message (from a built instance or constructor kwargs) and returns it.
+    def add_message(message : Message) : Message
+      @messages << message
+      message
+    end
+
+    def add_message(role : Role | Symbol | String, content : String | Content | Nil = nil,
+                    tool_call_id : String? = nil,
+                    tool_calls : Hash(String, ToolCall)? = nil) : Message
+      message = Message.new(role: role, content: content,
+        tool_call_id: tool_call_id, tool_calls: tool_calls)
+      add_message(message)
+    end
+
+    # Removes all in-memory messages (ruby_llm's `reset_messages!`).
+    def reset_messages! : Nil
+      @messages.clear
+    end
+
+    # ---- Completion (sync) -------------------------------------------------
+
+    def complete : Message
+      complete_once
+    end
+
+    # ---- Completion (streaming) --------------------------------------------
+
+    def complete(&block : CrystalLLM::Chunk ->) : Message
+      complete_once(&block)
+    end
+
+    # DEFERRED: `cost` (Cost.aggregate over the message list isn't ported).
+    # See deferrals.
+
+    private def complete_once : Message
+      response = @provider.complete(
+        @messages,
+        tools: @tools,
+        temperature: @temperature,
+        model: @model,
+        params: @params,
+        headers: @headers,
+        schema: @schema,
+        thinking: @thinking
+      )
+
+      run_message_callbacks("before_message", response) # mirror ruby_llm's non-stream path
+      normalize_schema_response(response)
+      add_message(response)
+      run_message_callbacks("after_message", response)
+
+      if response.tool_call?
+        handle_tool_calls(response)
+      else
+        response
+      end
+    end
+
+    private def complete_once(&block : CrystalLLM::Chunk ->) : Message
+      run_message_callbacks("before_message", nil)
+
+      response = @provider.complete(
+        @messages,
+        tools: @tools,
+        temperature: @temperature,
+        model: @model,
+        params: @params,
+        headers: @headers,
+        schema: @schema,
+        thinking: @thinking,
+        &block
+      )
+
+      normalize_schema_response(response)
+      add_message(response)
+      run_message_callbacks("after_message", response)
+
+      if response.tool_call?
+        handle_tool_calls(response, &block)
+      else
+        response
+      end
+    end
+
+    # ---- Tool-call loop ----------------------------------------------------
+
+    private def handle_tool_calls(response : Message) : Message
+      halt_result = run_tool_calls(response)
+      reset_tool_choice if forced_tool_choice?
+      if halt_message = halt_result
+        halt_message
+      else
+        complete
+      end
+    end
+
+    private def handle_tool_calls(response : Message, &block : CrystalLLM::Chunk ->) : Message
+      halt_result = run_tool_calls(response)
+      reset_tool_choice if forced_tool_choice?
+      if halt_message = halt_result
+        halt_message
+      else
+        complete(&block)
+      end
+    end
+
+    # Executes each tool call in the response, appending a tool-role result
+    # message for each. Returns the halt Message if a tool requested a halt,
+    # else nil (signalling the loop should continue to another completion).
+    private def run_tool_calls(response : Message) : Message?
+      halt_message : Message? = nil
+      tool_calls = response.tool_calls
+      return nil unless tool_calls
+
+      tool_calls.each_value do |tool_call|
+        run_message_callbacks("before_message", nil)
+        run_tool_call_callbacks(tool_call)
+        result = execute_tool(tool_call)
+        run_tool_result_callbacks(result)
+
+        if result.is_a?(Tool::Halt)
+          tool_payload = result.content
+        else
+          tool_payload = result
+        end
+
+        content = content_for_message(tool_payload)
+        message = add_message(role: Role::Tool, content: content, tool_call_id: tool_call.id)
+        run_message_callbacks("after_message", message)
+
+        halt_message = message if result.is_a?(Tool::Halt)
+      end
+
+      halt_message
+    end
+
+    private def execute_tool(tool_call : ToolCall) : ToolResult
+      tool = @tools[tool_call.name]?
+      if tool.nil?
+        return {
+          "error" => JSON::Any.new(
+            "Model tried to call unavailable tool `#{tool_call.name}`. " \
+            "Available tools: #{@tools.keys.to_json}."
+          ),
+        } of String => JSON::Any
+      end
+
+      tool.call(tool_call.arguments)
+    end
+
+    # ---- Content + schema helpers ------------------------------------------
+
+    private def build_content(message : String?, attachments : Attachable?) : String | Content | Nil
+      return message if message.nil? && attachments.nil?
+
+      if attachments.nil?
+        message
+      else
+        Content.new(message, attachments)
+      end
+    end
+
+    # Turns a tool result payload into message content (String or Content).
+    private def content_for_message(payload : ToolResult) : String | Content
+      case payload
+      when String                  then payload
+      when Content                 then payload
+      when Hash(String, JSON::Any) then payload.to_json
+      when Tool::Halt
+        # A Halt wrapping another payload (nested halt) — render its content.
+        content_for_message(payload.content)
+      else
+        payload.to_s
+      end
+    end
+
+    # Parses a String response into JSON when a schema was requested (matches
+    # ruby_llm's `normalize_schema_response`). On parse failure, keeps the string.
+    private def normalize_schema_response(response : Message) : Nil
+      return unless @schema
+      return if response.tool_call?
+      content = response.content
+      return unless content.is_a?(String)
+
+      JSON.parse(content)
+      # The parse succeeding means the content is valid JSON; ruby_llm replaces
+      # `response.content` with the parsed object. The port's Message#content is a
+      # String here (no JSON::Any content variant), so we leave the raw JSON string
+      # in place — downstream callers parse it. Documented divergence.
+
+
+    rescue JSON::ParseException
+      # keep content as the original string
+    end
+
+    # Normalizes a raw schema into the `{name, schema, strict}` envelope (ruby_llm's
+    # `normalize_schema_payload`). Returns the envelope as a `JSON::Any`.
+    private def normalize_schema_payload(raw : Hash(String, JSON::Any)?) : JSON::Any?
+      return nil if raw.nil?
+
+      # If the raw hash is already an envelope (has a `schema` key), pull the inner
+      # schema; otherwise treat the whole hash as the schema definition.
+      inner = raw["schema"]?.try(&.as_h?) || raw
+      strict = extract_strict(raw, inner)
+      name = sanitize_schema_name(raw["name"]?.try(&.as_s?) || "response")
+
+      schema_def = inner.dup
+      schema_def.delete("strict")
+
+      envelope = {} of String => JSON::Any
+      envelope["name"] = JSON::Any.new(name)
+      envelope["schema"] = JSON::Any.new(schema_def)
+      envelope["strict"] = JSON::Any.new(strict)
+      if desc = raw["description"]?.try(&.as_s?)
+        envelope["description"] = JSON::Any.new(desc)
+      end
+      JSON::Any.new(envelope)
+    end
+
+    private def extract_strict(raw : Hash(String, JSON::Any), inner : Hash(String, JSON::Any)) : Bool
+      if s = raw["strict"]?
+        return s.as_bool? != false
+      end
+      if s = inner["strict"]?
+        return s.as_bool? != false
+      end
+      true
+    end
+
+    private def sanitize_schema_name(name : String) : String
+      sanitized = name.gsub(/[^a-zA-Z0-9_-]/, "_")
+      sanitized.empty? ? "response" : sanitized
+    end
+
+    # ---- Tool option / choice helpers --------------------------------------
+
+    private def update_tool_options(choice : String?, calls : String?) : Nil
+      unless choice.nil?
+        normalized = choice
+        valid = ["auto", "none", "required"] + @tools.keys
+        unless valid.includes?(normalized)
+          raise InvalidToolChoiceError.new(
+            "Invalid tool choice: #{choice}. Valid choices are: #{valid.join(", ")}"
+          )
+        end
+        @tool_prefs["choice"] = normalized
+      end
+
+      @tool_prefs["calls"] = normalize_calls(calls) unless calls.nil?
+    end
+
+    private def normalize_calls(calls : String) : String
+      case calls
+      when "many"     then "many"
+      when "one", "1" then "one"
+      else
+        raise ArgumentError.new(
+          "Invalid calls value: #{calls.inspect}. Valid values are: \"many\", \"one\", or \"1\""
+        )
+      end
+    end
+
+    private def forced_tool_choice? : Bool
+      choice = @tool_prefs["choice"]?
+      !choice.nil? && !["auto", "none"].includes?(choice)
+    end
+
+    private def reset_tool_choice : Nil
+      @tool_prefs["choice"] = nil
+    end
+
+    # ---- System-instruction helpers ----------------------------------------
+
+    private def append_system_instruction(instructions : String) : Nil
+      system_messages = @messages.select(&.role.system?)
+      non_system = @messages.reject(&.role.system?)
+      system_messages << Message.new(role: Role::System, content: instructions)
+      @messages = system_messages + non_system
+    end
+
+    private def replace_system_instruction(instructions : String) : Nil
+      non_system = @messages.reject(&.role.system?)
+      system_message = Message.new(role: Role::System, content: instructions)
+      @messages = [system_message] + non_system
+    end
+
+    # ---- Callback dispatch -------------------------------------------------
+
+    private def add_message_callback(name : String, &block : Message ->) : self
+      (@callbacks[name] ||= [] of Message ->) << block
+      self
+    end
+
+    private def run_message_callbacks(name : String, message : Message?) : Nil
+      callbacks = @callbacks[name]?
+      return unless callbacks
+      callbacks.each { |callback| callback.call(message || Message.new(role: Role::Assistant)) }
+    end
+
+    private def run_tool_call_callbacks(tool_call : ToolCall) : Nil
+      callbacks = @tool_call_callbacks["before_tool_call"]?
+      return unless callbacks
+      callbacks.each(&.call(tool_call))
+    end
+
+    private def run_tool_result_callbacks(result : ToolResult) : Nil
+      callbacks = @tool_result_callbacks["after_tool_result"]?
+      return unless callbacks
+      callbacks.each(&.call(result))
+    end
+  end
+end

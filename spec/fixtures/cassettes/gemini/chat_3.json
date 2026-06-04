@@ -1,0 +1,35 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "Ruby"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 51,
+    "candidatesTokenCount": 1,
+    "totalTokenCount": 78,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 14
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 37
+      }
+    ],
+    "thoughtsTokenCount": 26,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "-tP7aYCqIf6HxN8P3qWbsA0"
+}

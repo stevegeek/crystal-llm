@@ -1,0 +1,42 @@
+event: message_start
+data: {"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_013HEa7utLLGRsB1kozQdj8v","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":633,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"not_available"}}              }
+
+event: content_block_start
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}    }
+
+event: ping
+data: {"type": "ping"}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"According"}    }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" to the tool, **Ruby** is the best language to learn!\n\nRuby is a great choice because it's:\n- **"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Beginner-friendly**: It has clean, readable syntax that's often described as \"feeling like English\"\n- **Versat"}             }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ile**: It's used for web development (with frameworks like Ruby on Rails), scripting, automation, and data processing"}            }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\n- **Productive**: Ruby prioritizes developer happiness and productivity, allowing you to write less code to"}     }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" accomplish more\n- **Strong community**: It has an active and supportive community with lots of learning resources available"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"\n\nIf you're interested in web development specifically, learning Ruby alongside the Rails framework is"}  }
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" a popular path for many developers."}            }
+
+event: content_block_stop
+data: {"type":"content_block_stop","index":0            }
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":633,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":149} }
+
+event: message_stop
+data: {"type":"message_stop"           }
+

@@ -1,0 +1,39 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "The video shows a wide, static shot of a beautiful beach scene on a sunny day.\n\nHere's what I see:\n\n*   **A person:** In the center-lower part of the frame, a person with long, dark hair (likely female, given the style) is sitting on the sand with their back to the camera. They are wearing a pink sleeveless top and what appear to be white shorts or light-colored bottoms. Their hair occasionally blows gently in the breeze.\n*   **The Beach:** The foreground consists of light golden-tan sand, with some scattered natural debris like small twigs and leaves.\n*   **The Ocean:** Beyond the sand, there's a clear, light blue, and calm ocean. Small, gentle waves can be seen consistently rolling onto the shore. The water stretches out to the horizon, where it meets a bright, blue sky.\n*   **The Sky:** The sky is a vibrant blue with several scattered, fluffy white cumulus clouds.\n*   **Atmosphere:** The overall impression is one of peace, relaxation, and natural beauty. The person seems to be enjoying a moment of contemplation by the sea."
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 4119,
+    "candidatesTokenCount": 239,
+    "totalTokenCount": 5317,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 9
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 3682
+      },
+      {
+        "modality": "AUDIO",
+        "tokenCount": 428
+      }
+    ],
+    "thoughtsTokenCount": 959,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "59T7aY_aN_3xnsEPmPK3gA4"
+}

@@ -1,0 +1,53 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "text": "This video shows a serene beach scene.\n\nHere's what I see:\n*   A **young woman** is sitting on a sandy beach with her back to the camera.\n*   She has **long, dark hair** that gently blows in the breeze.\n*   She is wearing a **light-colored (possibly pink or peach) sleeveless top** and appears to be wearing white on the bottom.\n*   She is looking out towards a vast, **calm blue ocean** with very gentle waves lapping at the shore.\n*   The **sand** on the beach is light-colored and appears to have a few small pieces of natural debris (twigs, etc.) scattered on it.\n*   The **sky** is a clear, bright blue with scattered fluffy white clouds.\n*   The overall impression is one of peace, relaxation, and contemplation. The camera is static throughout the short clip."
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "avgLogprobs": -1.9619784529920647
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 3362,
+    "candidatesTokenCount": 191,
+    "totalTokenCount": 4439,
+    "cachedContentTokenCount": 2993,
+    "trafficType": "ON_DEMAND",
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 8
+      },
+      {
+        "modality": "VIDEO",
+        "tokenCount": 3354
+      }
+    ],
+    "cacheTokensDetails": [
+      {
+        "modality": "VIDEO",
+        "tokenCount": 2986
+      },
+      {
+        "modality": "TEXT",
+        "tokenCount": 7
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 191
+      }
+    ],
+    "thoughtsTokenCount": 886
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "createTime": "2026-05-06T23:55:41.538006Z",
+  "responseId": "_dT7aZbrIIGBhcIPu4evuQI"
+}

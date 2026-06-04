@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run the spec suite with CRYSTAL_LIBRARY_PATH set (asdf 0.18 workaround).
+set -euo pipefail
+
+CRYSTAL_INSTALL="${HOME}/.asdf/installs/crystal/1.20.1"
+export CRYSTAL_LIBRARY_PATH="${CRYSTAL_LIBRARY_PATH:+$CRYSTAL_LIBRARY_PATH:}${CRYSTAL_INSTALL}/embedded/lib"
+cd "$(dirname "$0")/.."
+exec crystal spec "$@"

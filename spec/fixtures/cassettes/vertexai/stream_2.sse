@@ -1,0 +1,2 @@
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": "1\n2\n3"}]},"finishReason": "STOP"}],"usageMetadata": {"promptTokenCount": 7,"candidatesTokenCount": 5,"totalTokenCount": 32,"trafficType": "ON_DEMAND","promptTokensDetails": [{"modality": "TEXT","tokenCount": 7}],"candidatesTokensDetails": [{"modality": "TEXT","tokenCount": 5}],"thoughtsTokenCount": 20},"modelVersion": "gemini-2.5-flash","createTime": "2026-05-06T23:51:47.641681Z","responseId": "E9T7aZGVJ77YvdIPyc6vuQU"}
+

@@ -1,0 +1,45 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "role": "model",
+        "parts": [
+          {
+            "functionCall": {
+              "name": "weather",
+              "args": {
+                "longitude": "13.4050",
+                "latitude": "52.5200"
+              }
+            },
+            "thoughtSignature": "CqQCAY89a1+ie7AhJZFYgGP7BLtJttZvEJeeycwxUDbYn7VJ57Q0h4jl9NgB37OFGLFZ80dgBbDskVvF0bcWlG62M7fsmWlA8IVM3xh7Ty1QMaRKimsb2I1AJxmva24Xcna39sVh1CHv2puEhKJlwVe/wexcrOzXcQprwl/vh7Z9PWpI0fBStJ4XGWIlf0IYUY30hr+1jvpUFG0W9Wc4wM3BEO1tY9FaHVQRP6KDKZXq5TdM4o9+q4MgVq562QrbtcEHWhVWzjisCiE4gH3SMVdaQGSSEMLyibY5zVDgINMTuwhUwpUUdijRuYQs0lPo1yEl1cR7jTscThwrrZd5lFW7x3HSvRSEo1Qz/yZrRtjUvPmQ8IC2RsRgHfwUkSuwePP93pt/wg=="
+          }
+        ]
+      },
+      "finishReason": "STOP",
+      "avgLogprobs": -0.67604070551255169
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 70,
+    "candidatesTokenCount": 17,
+    "totalTokenCount": 140,
+    "trafficType": "ON_DEMAND",
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 70
+      }
+    ],
+    "candidatesTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 17
+      }
+    ],
+    "thoughtsTokenCount": 53
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "createTime": "2026-05-06T23:54:53.902483Z",
+  "responseId": "zdT7adOKN8Pv2fMP4uOe-AQ"
+}

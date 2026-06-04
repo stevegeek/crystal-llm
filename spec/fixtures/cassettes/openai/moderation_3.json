@@ -1,0 +1,80 @@
+{
+  "id": "modr-5214",
+  "model": "omni-moderation-latest",
+  "results": [
+    {
+      "flagged": false,
+      "categories": {
+        "harassment": false,
+        "harassment/threatening": false,
+        "sexual": false,
+        "hate": false,
+        "hate/threatening": false,
+        "illicit": false,
+        "illicit/violent": false,
+        "self-harm/intent": false,
+        "self-harm/instructions": false,
+        "self-harm": false,
+        "sexual/minors": false,
+        "violence": false,
+        "violence/graphic": false
+      },
+      "category_scores": {
+        "harassment": 0.000010229985472581487,
+        "harassment/threatening": 3.0718185454758057e-6,
+        "sexual": 0.00005527786369235996,
+        "hate": 6.709224499600877e-6,
+        "hate/threatening": 2.948016613843445e-7,
+        "illicit": 0.000012533751425646102,
+        "illicit/violent": 5.920916517463734e-6,
+        "self-harm/intent": 5.920916517463734e-6,
+        "self-harm/instructions": 3.535625074174432e-6,
+        "self-harm": 0.000017265154827585877,
+        "sexual/minors": 4.264746818557914e-6,
+        "violence": 0.00048598979794611563,
+        "violence/graphic": 2.355261854303796e-6
+      },
+      "category_applied_input_types": {
+        "harassment": [
+          "text"
+        ],
+        "harassment/threatening": [
+          "text"
+        ],
+        "sexual": [
+          "text"
+        ],
+        "hate": [
+          "text"
+        ],
+        "hate/threatening": [
+          "text"
+        ],
+        "illicit": [
+          "text"
+        ],
+        "illicit/violent": [
+          "text"
+        ],
+        "self-harm/intent": [
+          "text"
+        ],
+        "self-harm/instructions": [
+          "text"
+        ],
+        "self-harm": [
+          "text"
+        ],
+        "sexual/minors": [
+          "text"
+        ],
+        "violence": [
+          "text"
+        ],
+        "violence/graphic": [
+          "text"
+        ]
+      }
+    }
+  ]
+}

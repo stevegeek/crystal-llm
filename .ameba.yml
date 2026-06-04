@@ -1,0 +1,9 @@
+# Ameba config for CrystalLLM.
+#
+# CrystalLLM is a faithful port of ruby_llm and mirrors its accessor names. The
+# Ruby gem exposes boolean *configuration/data* as plain accessors (e.g.
+# `config.use_new_acts_as`, `message.tool_call`), not `?`-suffixed queries, so we
+# disable the bool-query naming convention to keep the API byte-compatible.
+# Predicate *methods* that ruby_llm spells with `?` (e.g. `tool_call?`) still use `?`.
+Naming/QueryBoolMethods:
+  Enabled: false

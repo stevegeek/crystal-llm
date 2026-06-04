@@ -1,0 +1,32 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "{\"name\":\"John\",\"age\":30}",
+            "thoughtSignature": "EtEGCs4GAQw51sfTCLZ8w1VkYXOOVnjoSHLPUnP29Wcr+jGCh3u76XM3Mw37Y3eWI8kExmdvnQ8hUREffb1/Zm6W2CUYMtgXpciejn6cOvvFcJOFsdtVRwXlOSge+MwpgbKTi8WQgnm3RDYOQJCsU3LMC9SJ+TufjI9XFDI7KTVg7QiN6bkfSAtgvhNBOxNhHGyFpa8qaE+ofvkXyYhS/uoDLkwtYnfKfmfX13sYWp1iUlmlyL+OubdigZlMCB/Wf0t7Sd+1BB9akmdXJssphGHNb+vcJnQ4A9zMK7Vd8nQi0mYVJ2J3EftsI2u1EuKBDXgBRplHlVrKfp4cHTswkUddtHFiCrCLcO00GW0K3CrCoogCRQf+RdLUKlHE77xUe6f2AKthwOMvrV/aOBu2bPZQa7f4qyvEHREtm0hm2W3c/ol9vetye7xubzEgBOmd77QIvCJFEyZCCdYNNTIDt+FyZ/TFOFgxe3Lq0F/lCyJ8QyQJ6158bd5GJzxkZ23CHBSJbFG1ZuSxInkunqlJ9pMc3a1ZcSiurRpomzKDjOCg/Pv9gQzZefiHjYoBcU7XBQy54pMmvjLmUr2ocA2Y9b4jbdJLUZY1Pl821VC612nag1psLUlGQ05NIkwooWXCUCrTYPIrCCr6gVlquvxzJcLFChh/G/KhwOtXvgyQ3xlPOnOWX9B1kL15au26CaHr7mCCr35P1lqNdzXwquaryfT7GkljgPchrKqrDlKEPr64DNx455ZTZ/4X8YKWVyzRYYJRiLG6zoBMhpttiry+oHT3bg8dDg9DQ0Mx/wVMqJvSXvZ0ftdm+utzmPGhGIou4jJwMkiw4i7VS13Bxyo+KVdz+ZYYeyKdacWKWlgarAjuonfnsZ1jHS7xqnciChHavg4QcSbv2T9b4ZgYLXg9lheRv/5UuUEJ2g2+JX+2r/1MQjWz2e+wJrcCe7MSAkvGMfPXvJpnoDRL7X4aS4nA1nOsGRtpRdT0PofUloLM71Ti01YFDJHcwyTUkrFzesYykFekNne2cEkcsVbpnOVzvLQaytw99Q0D8uiYgLMB9kJml1FSLAjFckqunLpV6MOPiLuUqd7C7ew+mUQ83Va+zD/3U3VqJZGrTExVHC4uZ1dmBgmv"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 13,
+    "candidatesTokenCount": 10,
+    "totalTokenCount": 273,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 13
+      }
+    ],
+    "thoughtsTokenCount": 250,
+    "serviceTier": "standard"
+  },
+  "modelVersion": "gemini-3-flash-preview",
+  "responseId": "ONT7aczzNOiE7M8P4qnu6Qc"
+}

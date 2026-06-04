@@ -1,0 +1,18 @@
+: OPENROUTER PROCESSING
+
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1778111848-Hp0a5x2UFUVRlYUtcIxO","object":"chat.completion.chunk","created":1778111848,"model":"anthropic/claude-4.5-haiku-20251001","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"id":"toolu_bdrk_01KuZeXFTWfWR24DYV5g4i4M","type":"function","function":{"name":"best_language_to_learn","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1778111848-Hp0a5x2UFUVRlYUtcIxO","object":"chat.completion.chunk","created":1778111848,"model":"anthropic/claude-4.5-haiku-20251001","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1778111848-Hp0a5x2UFUVRlYUtcIxO","object":"chat.completion.chunk","created":1778111848,"model":"anthropic/claude-4.5-haiku-20251001","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1778111848-Hp0a5x2UFUVRlYUtcIxO","object":"chat.completion.chunk","created":1778111848,"model":"anthropic/claude-4.5-haiku-20251001","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":null,"role":"assistant","tool_calls":[{"index":0,"function":{"arguments":"{}"}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1778111848-Hp0a5x2UFUVRlYUtcIxO","object":"chat.completion.chunk","created":1778111848,"model":"anthropic/claude-4.5-haiku-20251001","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_use"}]}
+
+data: {"id":"gen-1778111848-Hp0a5x2UFUVRlYUtcIxO","object":"chat.completion.chunk","created":1778111848,"model":"anthropic/claude-4.5-haiku-20251001","provider":"Amazon Bedrock","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"tool_calls","native_finish_reason":"tool_use"}],"usage":{"prompt_tokens":858,"completion_tokens":41,"total_tokens":899,"cost":0.001063,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.001063,"upstream_inference_prompt_cost":0.000858,"upstream_inference_completions_cost":0.000205},"completion_tokens_details":{"reasoning_tokens":0,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
+

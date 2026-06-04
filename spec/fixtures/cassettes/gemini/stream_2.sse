@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Based"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 141,"candidatesTokenCount": 1,"totalTokenCount": 142,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 141}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "VNX7aei9DNXfvdIP3vyOuQ4"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " on my analysis, the best language to learn is Ruby."}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 141,"candidatesTokenCount": 13,"totalTokenCount": 154,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 141}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "VNX7aei9DNXfvdIP3vyOuQ4"}
+

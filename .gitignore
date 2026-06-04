@@ -1,0 +1,11 @@
+/docs
+
+# Crystal build artifacts & deps
+/lib/
+/bin/
+/.shards/
+*.dwarf
+/shard.lock
+shard.override.yml
+.env
+.superpowers/

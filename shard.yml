@@ -1,0 +1,25 @@
+name: crystal_llm
+version: 0.1.0
+
+description: |
+  One beautiful Crystal API for GPT, Claude, Gemini, and more. A faithful port
+  of Carmine Paolino's ruby_llm gem — same public API, tracking its versions.
+
+authors:
+  - Stephen Ierodiaconou <stevegeek@gmail.com>
+
+crystal: ">= 1.20.0"
+
+license: MIT
+
+repository: https://github.com/stevegeek/crystal-llm
+
+dependencies:
+  crest:
+    github: mamantoha/crest
+    version: ">= 1.0.0"
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
+    version: "~> 1.6"

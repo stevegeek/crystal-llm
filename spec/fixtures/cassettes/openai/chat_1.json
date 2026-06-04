@@ -1,0 +1,35 @@
+{
+  "id": "chatcmpl-DcgMaF6n4Yel9pZ97pKeGVGsT64cu",
+  "object": "chat.completion",
+  "created": 1778111680,
+  "model": "gpt-5-nano-2025-08-07",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Yukihiro Matsumoto (often called Matz), a Japanese programmer, created the Ruby programming language (first released in 1995).",
+        "refusal": null,
+        "annotations": []
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 16,
+    "completion_tokens": 231,
+    "total_tokens": 247,
+    "prompt_tokens_details": {
+      "cached_tokens": 0,
+      "audio_tokens": 0
+    },
+    "completion_tokens_details": {
+      "reasoning_tokens": 192,
+      "audio_tokens": 0,
+      "accepted_prediction_tokens": 0,
+      "rejected_prediction_tokens": 0
+    }
+  },
+  "service_tier": "default",
+  "system_fingerprint": null
+}

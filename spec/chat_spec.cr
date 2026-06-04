@@ -1,0 +1,270 @@
+require "./spec_helper"
+require "../src/crystal_llm/chat"
+
+# A fully in-process fake provider. It overrides `complete` directly (both the
+# sync and streaming overloads) so NO HTTP is performed — the canned responses
+# are driven by a class-level script the spec sets up per test.
+class ChatSpecFakeProvider < CrystalLLM::Provider
+  # Queue of canned assistant Messages, consumed FIFO on each `complete`.
+  class_property scripted : Array(CrystalLLM::Message) = [] of CrystalLLM::Message
+  # Records each batch of messages the chat passed in (to assert accumulation).
+  class_property seen_messages : Array(Array(CrystalLLM::Message)) = [] of Array(CrystalLLM::Message)
+  class_property last_temperature : Float64? = nil
+
+  def self.reset! : Nil
+    self.scripted = [] of CrystalLLM::Message
+    self.seen_messages = [] of Array(CrystalLLM::Message)
+    self.last_temperature = nil
+  end
+
+  def self.configuration_requirements : Array(String)
+    [] of String
+  end
+
+  def complete(messages : Array(CrystalLLM::Message),
+               tools : Hash(String, CrystalLLM::Tool),
+               temperature : Float64?, model : CrystalLLM::Model::Info,
+               params : Hash(String, JSON::Any) = {} of String => JSON::Any,
+               headers : Hash(String, String) = {} of String => String,
+               schema : JSON::Any? = nil,
+               thinking : CrystalLLM::Thinking::Config? = nil) : CrystalLLM::Message
+    self.class.seen_messages << messages.dup
+    self.class.last_temperature = temperature
+    next_scripted
+  end
+
+  def complete(messages : Array(CrystalLLM::Message),
+               tools : Hash(String, CrystalLLM::Tool),
+               temperature : Float64?, model : CrystalLLM::Model::Info,
+               params : Hash(String, JSON::Any) = {} of String => JSON::Any,
+               headers : Hash(String, String) = {} of String => String,
+               schema : JSON::Any? = nil,
+               thinking : CrystalLLM::Thinking::Config? = nil,
+               &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+    self.class.seen_messages << messages.dup
+    message = next_scripted
+    # Emit one chunk carrying the message's text so streaming callers see data.
+    text = message.content
+    block.call(CrystalLLM::Chunk.new(role: CrystalLLM::Role::Assistant,
+      content: text.is_a?(String) ? text : nil))
+    message
+  end
+
+  private def next_scripted : CrystalLLM::Message
+    raise "ChatSpecFakeProvider ran out of scripted responses" if self.class.scripted.empty?
+    self.class.scripted.shift
+  end
+end
+
+CrystalLLM::Provider.register("chat_spec_fake", ChatSpecFakeProvider)
+
+# A trivial tool used to exercise the tool-call loop offline.
+class ChatSpecEchoTool < CrystalLLM::Tool
+  description "Echoes the supplied word"
+  param word : String, "the word to echo", required: true # ameba:disable Lint/UselessAssign
+
+  def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
+    "echo: #{args["word"].as_s}"
+  end
+end
+
+private def assistant(text : String) : CrystalLLM::Message
+  CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: text)
+end
+
+private def tool_call_message(id : String, name : String,
+                              args : Hash(String, JSON::Any)) : CrystalLLM::Message
+  calls = {id => CrystalLLM::ToolCall.new(id: id, name: name, arguments: args)}
+  CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, tool_calls: calls)
+end
+
+private def new_chat : CrystalLLM::Chat
+  # gpt-5.4 is the configured default_model and resolves to the openai provider;
+  # but we want the fake provider, so we construct against a known fake model.
+  CrystalLLM::Chat.new(model: "fake-model", provider: "chat_spec_fake",
+    assume_model_exists: true)
+end
+
+describe CrystalLLM::Chat do
+  before_each do
+    ChatSpecFakeProvider.reset!
+  end
+
+  describe "#ask" do
+    it "adds a user message and returns the assistant response" do
+      ChatSpecFakeProvider.scripted = [assistant("hi there")]
+      chat = new_chat
+
+      response = chat.ask("hello")
+
+      response.role.should eq(CrystalLLM::Role::Assistant)
+      response.content.should eq("hi there")
+      # user message + assistant response accumulated
+      chat.messages.size.should eq(2)
+      chat.messages.first.role.should eq(CrystalLLM::Role::User)
+      chat.messages.first.content.should eq("hello")
+      chat.messages.last.content.should eq("hi there")
+    end
+
+    it "is aliased as say" do
+      ChatSpecFakeProvider.scripted = [assistant("said")]
+      chat = new_chat
+      chat.say("speak").content.should eq("said")
+    end
+  end
+
+  describe "streaming #ask" do
+    it "yields chunks and returns the final message" do
+      ChatSpecFakeProvider.scripted = [assistant("streamed")]
+      chat = new_chat
+      chunks = [] of String
+
+      response = chat.ask("hello") do |chunk|
+        c = chunk.content
+        chunks << c if c.is_a?(String)
+      end
+
+      response.content.should eq("streamed")
+      chunks.should eq(["streamed"])
+    end
+  end
+
+  describe "tool calls" do
+    it "executes a tool then completes again with the result" do
+      args = {"word" => JSON::Any.new("crystal")} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [
+        tool_call_message("call_1", "chat_spec_echo", args),
+        assistant("done"),
+      ]
+      chat = new_chat.with_tool(ChatSpecEchoTool.new)
+
+      response = chat.ask("use the tool")
+
+      response.content.should eq("done")
+      # user, assistant(tool_call), tool result, assistant(done)
+      chat.messages.size.should eq(4)
+      tool_message = chat.messages[2]
+      tool_message.role.should eq(CrystalLLM::Role::Tool)
+      tool_message.content.should eq("echo: crystal")
+      tool_message.tool_call_id.should eq("call_1")
+    end
+
+    it "reports an error for an unknown tool" do
+      args = {} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [
+        tool_call_message("call_x", "nonexistent", args),
+        assistant("recovered"),
+      ]
+      chat = new_chat
+
+      response = chat.ask("call missing tool")
+
+      response.content.should eq("recovered")
+      tool_message = chat.messages[2]
+      tool_message.role.should eq(CrystalLLM::Role::Tool)
+      tool_message.content.as(String).should contain("unavailable tool")
+    end
+  end
+
+  describe "callbacks" do
+    it "runs after_message callbacks with each new message" do
+      ChatSpecFakeProvider.scripted = [assistant("cb")]
+      seen = [] of CrystalLLM::Message
+      chat = new_chat.after_message { |msg| seen << msg }
+
+      chat.ask("hi")
+
+      seen.map(&.content).should eq(["cb"])
+    end
+  end
+
+  describe "#with_temperature" do
+    it "threads the temperature into the provider call" do
+      ChatSpecFakeProvider.scripted = [assistant("ok")]
+      chat = new_chat.with_temperature(0.2)
+
+      chat.ask("hi")
+
+      ChatSpecFakeProvider.last_temperature.should eq(0.2)
+    end
+  end
+
+  describe "#with_instructions" do
+    it "prepends a system message" do
+      ChatSpecFakeProvider.scripted = [assistant("ok")]
+      chat = new_chat.with_instructions("be terse")
+
+      chat.messages.size.should eq(1)
+      chat.messages.first.role.should eq(CrystalLLM::Role::System)
+      chat.messages.first.content.should eq("be terse")
+
+      chat.ask("hi")
+      # system message stays first
+      chat.messages.first.role.should eq(CrystalLLM::Role::System)
+    end
+
+    it "replaces by default and appends with append: true" do
+      chat = new_chat
+        .with_instructions("first")
+        .with_instructions("second")
+      chat.messages.count(&.role.system?).should eq(1)
+      chat.messages.first.content.should eq("second")
+
+      chat.with_instructions("third", append: true)
+      chat.messages.count(&.role.system?).should eq(2)
+    end
+  end
+
+  describe "#with_schema" do
+    it "normalizes a raw json-schema into the envelope" do
+      raw = {
+        "name"   => JSON::Any.new("person"),
+        "schema" => JSON::Any.new({
+          "type" => JSON::Any.new("object"),
+        } of String => JSON::Any),
+      } of String => JSON::Any
+      chat = new_chat.with_schema(raw)
+
+      envelope = chat.schema
+      envelope.should_not be_nil
+      schema = envelope.as(JSON::Any).as_h
+      schema["name"].as_s.should eq("person")
+      schema["strict"].as_bool.should be_true
+      schema["schema"].as_h["type"].as_s.should eq("object")
+    end
+
+    it "accepts a CrystalLLM::Schema instance" do
+      chat = new_chat.with_schema(ChatSpecPersonSchema.new("person"))
+      envelope = chat.schema
+      envelope.should_not be_nil
+      schema = envelope.as(JSON::Any).as_h
+      schema["name"].as_s.should eq("person")
+      schema["schema"].as_h["properties"].as_h.has_key?("name").should be_true
+    end
+  end
+
+  describe "Enumerable" do
+    it "iterates over messages" do
+      ChatSpecFakeProvider.scripted = [assistant("a")]
+      chat = new_chat
+      chat.ask("q")
+      roles = chat.map(&.role)
+      roles.should eq([CrystalLLM::Role::User, CrystalLLM::Role::Assistant])
+    end
+  end
+
+  describe "#reset_messages!" do
+    it "clears accumulated messages" do
+      ChatSpecFakeProvider.scripted = [assistant("a")]
+      chat = new_chat
+      chat.ask("q")
+      chat.messages.empty?.should be_false
+      chat.reset_messages!
+      chat.messages.empty?.should be_true
+    end
+  end
+end
+
+class ChatSpecPersonSchema < CrystalLLM::Schema
+  string "name", description: "Full name"
+end
