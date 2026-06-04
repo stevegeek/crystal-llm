@@ -69,6 +69,25 @@ Residual deferral: `transcribe`'s `speaker_references` encoding still needs
 `Attachment#for_llm` (the attachment-provider data-URL surface) and raises a clear
 "deferred" error.
 
+## Path to full parity — roadmap (2026-06-04 audit)
+
+A systematic parity audit (172 features) put CrystalLLM at **~80–85% functional parity** with ruby_llm 1.15.0: the core paths (chat ask/complete sync+stream, the tool-call loop, primitive/object/array Schemas, raw structured output, the facade, OpenAI/Anthropic/Gemini chat, base Configuration) are ported and working. Remaining work, prioritized:
+
+**Critical (blocks real use — "looks ported but doesn't work"):**
+1. **Provider auth** — Bedrock SigV4 is *computed but never threaded* into `sync_response`/`list_models`; VertexAI never mints an OAuth bearer (ADC/service-account); Azure never acquires an AAD token. All 3 are non-functional for live calls until wired. *(L)*
+2. **Thinking round-trip** — `Message` has **no `thinking` field**, so providers extract reasoning text/signature then discard it; this single gap darkens Anthropic outbound prepend, `StreamAccumulator#append_thinking_from_chunk`, and OpenRouter/Mistral reasoning. Add `@thinking` (text+signature) to Message + `to_h`. *(M-L)*
+
+**High:**
+3. **Streaming error handling** — per-provider `parse_streaming_error` is defined but **never called**; SSE error events / failed-response bodies are silently swallowed mid-stream, and the non-200 stream-start path bypasses `map_error`. Plus Bedrock binary-eventstream decode. *(M)*
+4. **tool_prefs forwarding** — Chat validates+holds `choice`/`calls` but `render_payload` omits them, so `tool_choice`/parallel never reach the provider. One wiring step. *(S-M)*
+5. **Vision/attachments parity + Gemini/Vertex structured-output schema** — Bedrock/Vertex emit no image blocks; Gemini structured output is a thin passthrough (no recursive type rewrite / $ref / version gate). *(M-L)*
+
+**Medium:** 6. Instrumentation (`CrystalLLM.instrument` + module + event payloads). 7. Cost aggregation (`Chat#cost`/`Message#cost`/`Image#cost`). 8. Marten persistence completion (`acts_as_model`, full message persistence incl. thinking/content_raw/attachments). 9. Schema validator + conditionals (`any_of`/`one_of`/`define`/`$ref`). 10. Agent class macros (headers/schema/thinking/context).
+
+**Low:** 11. typed `ask_as(T)` + legacy callbacks. 12. Models `refresh!`/json persistence. 13. Marten generators. 14. Transcription `speaker_references` + `Attachment#for_llm`.
+
+**Quick wins (existing infra, just wiring):** tool_prefs → `render_payload`; non-200 guard on the stream path → `map_error`; thread the done Bedrock SigV4 into requests; `Image#to_blob` URL branch via `Connection.basic_get`; `CrystalLLM.deprecator` facade accessor; `Chat#cost`/`Message#cost` over the existing `Cost.aggregate` + Models registry.
+
 ## Foundation review (2026-06-04) — tracked deferrals
 
 A multi-lens review validated the foundation (error, configuration, mime_type).

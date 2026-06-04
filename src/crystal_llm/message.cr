@@ -3,6 +3,9 @@ require "json"
 require "./content"
 require "./tokens"
 require "./tool_call"
+require "./cost"
+require "./models"
+require "./error"
 
 module CrystalLLM
   # The role of a message. ruby_llm uses symbols (:system/:user/:assistant/:tool);
@@ -101,8 +104,26 @@ module CrystalLLM
       @tokens.try(&.thinking)
     end
 
+    # The cost of this message's token usage. Mirrors ruby_llm's
+    # `cost(model: nil) = Cost.new(tokens:, model: model || model_info)`.
+    def cost(model : Model::Info? = nil) : Cost
+      Cost.new(tokens: @tokens, model: model || model_info)
+    end
+
+    # Resolves the `Model::Info` for `model_id` via the registry, memoized. Mirrors
+    # ruby_llm's `model_info` (returns nil when `model_id` is nil or unknown).
+    def model_info : Model::Info?
+      id = @model_id
+      return nil unless id
+      @model_info ||= Models.find(id)
+    rescue ModelNotFoundError
+      nil
+    end
+
+    @model_info : Model::Info?
+
     # NOTE: `to_h` (the persistence contract) is deferred to crystal-llm-marten,
-    # along with `cost`/`model_info`/`thinking`. See PORTING.md.
+    # along with `thinking`. See PORTING.md.
 
     private def normalize_role(role : Role | Symbol | String) : Role
       case role

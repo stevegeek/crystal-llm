@@ -236,6 +236,27 @@ describe CrystalLLM::Providers::OpenAI do
       pricing.text_tokens.input.should eq(2.5)
       pricing.text_tokens.output.should eq(10.0)
     end
+
+    # Bug 5 regression: previously-missing non-image families fell through to the
+    # 0.5/1.5 fallback. They now resolve to ruby's real per-family prices.
+    it "prices previously-missing non-image families from the ported table" do
+      caps = CrystalLLM::Providers::OpenAI::Capabilities
+
+      # input/output family that was absent before the fix (ruby: 5.0 / 20.0).
+      caps.model_family("gpt-4o-realtime-preview").should eq("gpt4o_realtime")
+      caps.input_price_for("gpt-4o-realtime-preview").should eq(5.0)
+      caps.output_price_for("gpt-4o-realtime-preview").should eq(20.0)
+
+      # price-only family: input == output == price (ruby's `{ price: 0.13 }`),
+      # not the 0.5/1.5 fallback.
+      caps.model_family("text-embedding-3-large").should eq("embedding3_large")
+      caps.input_price_for("text-embedding-3-large").should eq(0.13)
+      caps.output_price_for("text-embedding-3-large").should eq(0.13)
+
+      # unknown family still uses the generic fallback.
+      caps.input_price_for("some-unknown-model").should eq(0.5)
+      caps.output_price_for("some-unknown-model").should eq(1.5)
+    end
   end
 
   describe "Temperature.normalize" do

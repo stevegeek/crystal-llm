@@ -31,6 +31,14 @@ describe CrystalLLM::ErrorMiddleware do
       end
     end
 
+    # Regression (BUG 8): the `/token count exceeds/i` pattern (8th of ruby's 9)
+    # was missing, so a "token count exceeds" message fell through to BadRequest.
+    it "maps a 'token count exceeds' 400 to ContextLengthExceededError" do
+      expect_raises(CrystalLLM::ContextLengthExceededError) do
+        CrystalLLM::ErrorMiddleware.parse_error(400, "The token count exceeds the model's limit")
+      end
+    end
+
     it "keeps regular 400 errors as BadRequestError" do
       expect_raises(CrystalLLM::BadRequestError) do
         CrystalLLM::ErrorMiddleware.parse_error(400, "Invalid model specified")

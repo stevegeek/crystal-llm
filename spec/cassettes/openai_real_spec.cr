@@ -228,6 +228,37 @@ describe "OpenAI provider real-data parsing" do
       final.thinking_tokens.should eq(128)
     end
 
+    # REGRESSION (BUG 1): OpenAI streams tool-call `arguments` as a raw JSON String
+    # split across deltas (`parse_arguments: false`). The fragments must concatenate
+    # and parse ONCE — before the fix each delta parsed to {} and the args were lost.
+    # (The harvested OpenAI fixtures only carry empty-arg tool calls; this drives the
+    # real provider build_chunk + accumulator with the documented split-fragment shape.)
+    it "reconstructs split tool-call arguments across deltas" do
+      provider = build_openai_provider
+      config = CrystalLLM::Configuration.new
+      config.openai_api_key = "test"
+      stub = CrystalLLM::Spec::StubConnection.new(provider, config)
+      provider.connection = stub
+
+      sse = <<-SSE
+        data: {"model":"gpt-4o","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_x","type":"function","function":{"name":"weather","arguments":""}}]}}]}
+
+        data: {"model":"gpt-4o","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\": \\"Par"}}]}}]}
+
+        data: {"model":"gpt-4o","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"is\\"}"}}]}}]}
+
+        data: [DONE]
+
+
+        SSE
+      stub.stub_stream(sse)
+
+      final = provider.stream_response("{}") { |_| }
+      tool_calls = final.tool_calls.should_not be_nil
+      tool_calls["call_x"].name.should eq("weather")
+      tool_calls["call_x"].arguments["city"].as_s.should eq("Paris")
+    end
+
     it "stream_3: accumulates the text deltas '1, 2, 3'" do
       provider = build_openai_provider
       config = CrystalLLM::Configuration.new

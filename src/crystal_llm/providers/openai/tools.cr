@@ -10,8 +10,8 @@
 #   string from OpenAI. With `parse_arguments: true` (sync path) we JSON.parse them
 #   into the typed `Hash(String, JSON::Any)`. With `parse_arguments: false` (stream
 #   path) ruby_llm keeps the raw String fragment; CrystalLLM's ToolCall#arguments is
-#   a typed Hash, so the streaming buffer (StreamAccumulator::ToolCallBuffer) merges
-#   parsed hashes — we best-effort parse the fragment here and keep `{}` if partial.
+#   a typed Hash (can't hold a partial), so the raw fragment rides on
+#   ToolCall#raw_arguments and the StreamAccumulator concatenates + parses once.
 # - `build_tool_choice` returns a JSON::Any (string for auto/none/required, object
 #   for a named function), since tool_prefs is JSON-wire data.
 require "json"
@@ -84,14 +84,26 @@ module CrystalLLM
           id = tc["id"]?.try(&.as_s?) || ""
           func = tc["function"]?.try(&.as_h?) || {} of String => JSON::Any
           name = func["name"]?.try(&.as_s?) || ""
-          arguments = parse_tool_call_arguments(func["arguments"]?)
 
-          result[id] = ToolCall.new(
-            id: id,
-            name: name,
-            arguments: arguments,
-            thought_signature: extract_tool_call_thought_signature(tc)
-          )
+          if parse_arguments
+            # Sync path: arguments arrive complete; parse into the typed Hash now.
+            result[id] = ToolCall.new(
+              id: id,
+              name: name,
+              arguments: parse_tool_call_arguments(func["arguments"]?),
+              thought_signature: extract_tool_call_thought_signature(tc)
+            )
+          else
+            # Stream path (ruby_llm's `parse_arguments: false`): each delta carries a
+            # raw partial arguments String. Keep it raw on `raw_arguments` so the
+            # StreamAccumulator concatenates all fragments and parses them once.
+            result[id] = ToolCall.new(
+              id: id,
+              name: name,
+              raw_arguments: func["arguments"]?.try(&.as_s?) || "",
+              thought_signature: extract_tool_call_thought_signature(tc)
+            )
+          end
         end
         result
       end

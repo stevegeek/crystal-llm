@@ -62,26 +62,53 @@ module CrystalLLM
 
         # family => {input, output, cached_input} (per-million). Image families omit
         # text/cached_input here (image pricing deferred — see header).
+        #
+        # Ruby's PRICES additionally has "price-only" families (`{ price: X }`,
+        # e.g. embeddings/tts/whisper/moderation) where input==output==price (see
+        # ruby's `price_for`: `prices[key] || prices[:price] || fallback`). The
+        # Crystal port models those via PRICE_ONLY below, and `price_for` falls back
+        # to it so an otherwise-missing family resolves to its real price instead of
+        # the 0.5/1.5 default. (Image families are still deferred — header.)
         PRICES = {
-          "gpt5"        => {0.0_f64 + 1.25, 10.0, 0.125},
-          "gpt5_mini"   => {0.25, 2.0, 0.025},
-          "gpt5_nano"   => {0.05, 0.4, 0.005},
-          "gpt41"       => {2.0, 8.0, 0.5},
-          "gpt41_mini"  => {0.4, 1.6, 0.1},
-          "gpt41_nano"  => {0.1, 0.4, nil},
-          "gpt4"        => {10.0, 30.0, nil},
-          "gpt4_turbo"  => {10.0, 30.0, nil},
-          "gpt35_turbo" => {0.5, 1.5, nil},
-          "gpt4o"       => {2.5, 10.0, nil},
-          "gpt4o_audio" => {2.5, 10.0, nil},
-          "gpt4o_mini"  => {0.15, 0.6, nil},
-          "o1"          => {15.0, 60.0, nil},
-          "o1_mini"     => {1.1, 4.4, nil},
-          "o1_pro"      => {150.0, 600.0, nil},
-          "o3_mini"     => {1.1, 4.4, nil},
-          "babbage"     => {0.4, 0.4, nil},
-          "davinci"     => {2.0, 2.0, nil},
+          "gpt5"                  => {0.0_f64 + 1.25, 10.0, 0.125},
+          "gpt5_mini"             => {0.25, 2.0, 0.025},
+          "gpt5_nano"             => {0.05, 0.4, 0.005},
+          "gpt41"                 => {2.0, 8.0, 0.5},
+          "gpt41_mini"            => {0.4, 1.6, 0.1},
+          "gpt41_nano"            => {0.1, 0.4, nil},
+          "gpt4"                  => {10.0, 30.0, nil},
+          "gpt4_turbo"            => {10.0, 30.0, nil},
+          "gpt35_turbo"           => {0.5, 1.5, nil},
+          "gpt4o"                 => {2.5, 10.0, nil},
+          "gpt4o_audio"           => {2.5, 10.0, nil},
+          "gpt4o_mini"            => {0.15, 0.6, nil},
+          "gpt4o_mini_audio"      => {0.15, 0.6, nil},
+          "gpt4o_mini_realtime"   => {0.6, 2.4, nil},
+          "gpt4o_mini_transcribe" => {1.25, 5.0, nil},
+          "gpt4o_mini_tts"        => {0.6, 12.0, nil},
+          "gpt4o_realtime"        => {5.0, 20.0, nil},
+          "gpt4o_search"          => {2.5, 10.0, nil},
+          "gpt4o_transcribe"      => {2.5, 10.0, nil},
+          "o1"                    => {15.0, 60.0, nil},
+          "o1_mini"               => {1.1, 4.4, nil},
+          "o1_pro"                => {150.0, 600.0, nil},
+          "o3_mini"               => {1.1, 4.4, nil},
+          "babbage"               => {0.4, 0.4, nil},
+          "davinci"               => {2.0, 2.0, nil},
         } of String => Tuple(Float64, Float64, Float64?)
+
+        # Ruby's `{ price: X }` price-only families: input == output == price, no
+        # cached price. (Image families are deferred — see header — so they are not
+        # listed here even though ruby carries text/images sub-pricing for them.)
+        PRICE_ONLY = {
+          "embedding3_large" => 0.13,
+          "embedding3_small" => 0.02,
+          "embedding_ada"    => 0.10,
+          "tts1"             => 15.0,
+          "tts1_hd"          => 30.0,
+          "whisper"          => 0.006,
+          "moderation"       => 0.0,
+        } of String => Float64
 
         NIL_LIMIT_FAMILIES = %w[
           gpt_image gpt_image_mini gpt_image15 gpt4o_mini_tts tts1 tts1_hd whisper
@@ -220,15 +247,22 @@ module CrystalLLM
           PRICES[model_family(model_id)]?
         end
 
+        # Mirrors ruby's `prices[key] || prices[:price] || fallback`: a family with
+        # explicit input/output uses those; a price-only family uses its single
+        # price for both directions; everything else falls back to the default.
         def self.price_for(model_id : String, key : Symbol, fallback : Float64) : Float64
-          prices = family_prices(model_id)
-          return fallback unless prices
-
-          case key
-          when :input  then prices[0]
-          when :output then prices[1]
-          else              fallback
+          if prices = family_prices(model_id)
+            case key
+            when :input  then return prices[0]
+            when :output then return prices[1]
+            end
           end
+
+          if price = PRICE_ONLY[model_family(model_id)]?
+            return price
+          end
+
+          fallback
         end
       end
     end

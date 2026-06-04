@@ -175,6 +175,41 @@ describe CrystalLLM::Providers::VertexAI do
       params["properties"].as_h["q"].as_h["type"].as_s.should eq("STRING")
       params["required"].as_a.map(&.as_s).should eq(["q"])
     end
+
+    # Bug 9 regression: VertexAI previously omitted Gemini's anyOf (nullable)
+    # normalization, so an `anyOf: [{type:string}, {type:null}]` property emitted a
+    # bare STRING with no nullable flag (and could even mis-type). It must now
+    # collapse to the non-null branch's type with `nullable: true`.
+    it "normalizes anyOf (nullable) properties like Gemini" do
+      provider = configured_vertexai
+      tool = CrystalLLM::DynamicTool.new(
+        "lookup", "Look something up",
+        {"type"       => JSON::Any.new("object"),
+         "properties" => JSON::Any.new({
+           "name" => JSON::Any.new({
+             "description" => JSON::Any.new("optional name"),
+             "anyOf"       => JSON::Any.new([
+               JSON::Any.new({"type" => JSON::Any.new("string")} of String => JSON::Any),
+               JSON::Any.new({"type" => JSON::Any.new("null")} of String => JSON::Any),
+             ]),
+           } of String => JSON::Any),
+         } of String => JSON::Any),
+         "required" => JSON::Any.new([] of JSON::Any)} of String => JSON::Any
+      ) { |args| args["name"]?.try(&.as_s?) || "" }
+
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"lookup" => tool} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: gemini_model
+      )
+
+      decl = payload["tools"].as_a[0].as_h["functionDeclarations"].as_a[0].as_h
+      name_prop = decl["parameters"].as_h["properties"].as_h["name"].as_h
+      name_prop["type"].as_s.should eq("STRING")
+      name_prop["nullable"].as_bool.should be_true
+      name_prop["description"].as_s.should eq("optional name")
+    end
   end
 
   describe "#format_messages" do

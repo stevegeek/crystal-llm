@@ -28,6 +28,12 @@ module SchemaSpecHelpers
       end
     end
   end
+
+  # Number constraints that mix integer-valued (0, 100) and fractional (0.5)
+  # bounds — to assert the parity serialization (integer-valued → Integer).
+  class NumberConstraints < CrystalLLM::Schema
+    number "ratio", minimum: 0.0, maximum: 100.0, multiple_of: 0.5
+  end
 end
 
 describe CrystalLLM::Schema do
@@ -104,6 +110,34 @@ describe CrystalLLM::Schema do
       json = SchemaSpecHelpers::FlatPerson.new("person").to_json
       parsed = JSON.parse(json)
       parsed["schema"]["type"].as_s.should eq("object")
+    end
+  end
+
+  # Regression (parity quick win d): ruby_llm-schema emits an integer-valued
+  # numeric constraint as a JSON Integer (`0`), not a Float (`0.0`); a genuinely
+  # fractional bound stays a Float.
+  describe "number-field integer-valued constraints" do
+    it "serializes integer-valued numeric constraints without a trailing .0" do
+      ratio = SchemaSpecHelpers::NumberConstraints.new("nc")
+        .to_json_schema["schema"].as_h["properties"].as_h["ratio"].as_h
+
+      # integer-valued → JSON Integer (raw is Int64, renders as `0` / `100`)
+      ratio["minimum"].raw.should be_a(Int64)
+      ratio["minimum"].as_i.should eq(0)
+      ratio["maximum"].as_i.should eq(100)
+      # fractional → stays a Float
+      ratio["multipleOf"].raw.should be_a(Float64)
+      ratio["multipleOf"].as_f.should eq(0.5)
+
+      json = SchemaSpecHelpers::NumberConstraints.new("nc").to_json
+      json.should contain(%("minimum":0))
+      json.should_not contain(%("minimum":0.0))
+    end
+
+    it "also applies to the existing number field's minimum" do
+      score = SchemaSpecHelpers::FlatPerson.new("p")
+        .to_json_schema["schema"].as_h["properties"].as_h["score"].as_h
+      score["minimum"].raw.should be_a(Int64)
     end
   end
 

@@ -97,9 +97,15 @@ module CrystalLLM
         parts = data.dig?("candidates", 0, "content", "parts").try(&.as_a?) || [] of JSON::Any
         tool_calls = extract_tool_calls(data)
 
+        # ruby's `extract_text_parts(parts) || parse_content(data)`: parse_content
+        # returns "" (not nil) for a function-call candidate. So a tool-only
+        # response carries content "" rather than nil (nil-vs-empty parity).
+        content = extract_text_parts(parts)
+        content = "" if content.nil? && tool_calls
+
         Message.new(
           role: Role::Assistant,
-          content: extract_text_parts(parts),
+          content: content,
           tool_calls: tool_calls,
           input_tokens: input_tokens(data),
           output_tokens: calculate_output_tokens(data),

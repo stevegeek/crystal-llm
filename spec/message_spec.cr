@@ -1,8 +1,7 @@
 require "./spec_helper"
 
 # Ports ruby_llm spec/ruby_llm/message_spec.rb (@ 1.15.0).
-# The `#cost` cases are deferred until model/info + cost + the models registry land
-# (tracked in PORTING.md); content-normalization and token aliases are ported here.
+# Content-normalization, token aliases, and `#cost` (parity quick win) are ported.
 describe CrystalLLM::Message do
   describe "#content" do
     it "normalizes nil content to empty string for assistant tool-call messages" do
@@ -59,6 +58,42 @@ describe CrystalLLM::Message do
       result = CrystalLLM::Message.new(role: :tool, content: "72F", tool_call_id: "c1")
       result.tool_result?.should be_true
       result.tool_results.should eq("72F")
+    end
+  end
+
+  # Parity quick win: Message#cost (mirrors ruby_llm's
+  # `cost(model:) = Cost.new(tokens:, model: model || model_info)`).
+  describe "#cost" do
+    it "builds a Cost over the message tokens and an explicit model" do
+      model = CrystalLLM::Model::Info.new(JSON.parse({
+        "id"       => "priced",
+        "name"     => "Priced",
+        "provider" => "openai",
+        "pricing"  => {
+          "text_tokens" => {
+            "standard" => {
+              "input_per_million"  => 1.0,
+              "output_per_million" => 2.0,
+            },
+          },
+        },
+      }.to_json).as_h)
+
+      message = CrystalLLM::Message.new(role: :assistant, content: "hi",
+        input_tokens: 1_000_000, output_tokens: 1_000_000)
+
+      cost = message.cost(model: model)
+      cost.should be_a(CrystalLLM::Cost)
+      cost.input.should eq(1.0)
+      cost.output.should eq(2.0)
+    end
+
+    it "falls back to nil model when model_id is unset (no pricing)" do
+      message = CrystalLLM::Message.new(role: :assistant, content: "hi",
+        input_tokens: 5, output_tokens: 5)
+      message.model_info.should be_nil
+      # tokens present, but no model → no price → input amount is nil.
+      message.cost.input.should be_nil
     end
   end
 end

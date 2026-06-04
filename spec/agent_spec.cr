@@ -1,5 +1,65 @@
 require "./spec_helper"
 require "../src/crystal_llm/agent"
+
+# An in-process fake provider so an Agent's delegated `ask`/block/`each`/`complete`
+# surface (BUG 7) can be exercised offline (no network). Overrides both `complete`
+# overloads.
+class AgentSpecFakeProvider < CrystalLLM::Provider
+  class_property scripted : Array(CrystalLLM::Message) = [] of CrystalLLM::Message
+
+  def self.reset! : Nil
+    self.scripted = [] of CrystalLLM::Message
+  end
+
+  def self.configuration_requirements : Array(String)
+    [] of String
+  end
+
+  def complete(messages : Array(CrystalLLM::Message),
+               tools : Hash(String, CrystalLLM::Tool),
+               temperature : Float64?, model : CrystalLLM::Model::Info,
+               params : Hash(String, JSON::Any) = {} of String => JSON::Any,
+               headers : Hash(String, String) = {} of String => String,
+               schema : JSON::Any? = nil,
+               thinking : CrystalLLM::Thinking::Config? = nil) : CrystalLLM::Message
+    self.class.scripted.shift
+  end
+
+  def complete(messages : Array(CrystalLLM::Message),
+               tools : Hash(String, CrystalLLM::Tool),
+               temperature : Float64?, model : CrystalLLM::Model::Info,
+               params : Hash(String, JSON::Any) = {} of String => JSON::Any,
+               headers : Hash(String, String) = {} of String => String,
+               schema : JSON::Any? = nil,
+               thinking : CrystalLLM::Thinking::Config? = nil,
+               &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+    message = self.class.scripted.shift
+    text = message.content
+    block.call(CrystalLLM::Chunk.new(role: CrystalLLM::Role::Assistant,
+      content: text.is_a?(String) ? text : nil))
+    message
+  end
+end
+
+CrystalLLM::Provider.register("agent_spec_fake", AgentSpecFakeProvider)
+
+# Seed the model registry with a fake-provider model so an Agent (whose macro
+# builds `CrystalLLM.chat(model: ...)` against the registry) resolves offline.
+private def seed_agent_fake_model : Nil
+  return if CrystalLLM::Models.instance.all.any?(&.id.== "agent-fake-model")
+  info = CrystalLLM::Model::Info.new(JSON.parse({
+    "id"       => "agent-fake-model",
+    "name"     => "Agent Fake",
+    "provider" => "agent_spec_fake",
+    "type"     => "chat",
+  }.to_json).as_h)
+  CrystalLLM::Models.instance.all << info
+end
+
+private class FakeProviderAgent < CrystalLLM::Agent
+  model "agent-fake-model"
+end
+
 # Agent builds a Chat, which resolves the model against the registry and
 # instantiates the OpenAI provider. The provider self-registers (and adds its
 # `openai_api_key` config option) only when its file is required; spec_helper's
@@ -70,6 +130,64 @@ describe CrystalLLM::Agent do
     it "resolves a different input independently per instance" do
       system_content(GreeterAgent.new(user: "Ada")).should eq("hi Ada")
       system_content(GreeterAgent.new(user: "Lin")).should eq("hi Lin")
+    end
+  end
+
+  # Regression (BUG 7): `method_missing` cannot forward a passed block or the
+  # `with:` attachment kwarg, so explicit `ask`/`say`/`each`/`complete` overloads
+  # delegate them to `@chat`. Without the overloads these calls fail to compile.
+  describe "block / attachment / each delegation" do
+    before_each { seed_agent_fake_model; AgentSpecFakeProvider.reset! }
+
+    it "forwards a streaming block through ask to @chat" do
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "streamed"),
+      ]
+      agent = FakeProviderAgent.new
+      chunks = [] of String
+
+      response = agent.ask("hello") do |chunk|
+        c = chunk.content
+        chunks << c if c.is_a?(String)
+      end
+
+      response.content.should eq("streamed")
+      chunks.should eq(["streamed"])
+    end
+
+    it "forwards a streaming block through say to @chat" do
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "said"),
+      ]
+      agent = FakeProviderAgent.new
+      seen = [] of String
+      agent.say("speak") { |chunk| (c = chunk.content).is_a?(String) && (seen << c) }
+      seen.should eq(["said"])
+    end
+
+    it "delegates each over the chat's messages" do
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "a"),
+      ]
+      agent = FakeProviderAgent.new
+      agent.ask("q")
+      roles = [] of CrystalLLM::Role
+      agent.each { |message| roles << message.role }
+      roles.should eq([CrystalLLM::Role::User, CrystalLLM::Role::Assistant])
+    end
+
+    it "delegates a streaming complete to @chat" do
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "done"),
+      ]
+      agent = FakeProviderAgent.new
+      agent.ask("seed-without-streaming-second-call")
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "done"),
+      ]
+      got = [] of String
+      agent.complete { |chunk| (c = chunk.content).is_a?(String) && (got << c) }
+      got.should eq(["done"])
     end
   end
 end

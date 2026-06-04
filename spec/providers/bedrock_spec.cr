@@ -296,6 +296,28 @@ describe CrystalLLM::Providers::Bedrock do
       raise "no tool calls" unless calls
       calls["tu_9"].name.should eq("search")
     end
+
+    # REGRESSION (BUG 1): Bedrock toolUse `input` arrives as a raw partial-JSON
+    # String fragment. build_chunk must read it as_s? (not as_h?) and carry it raw;
+    # the accumulator then concatenates the fragments and parses ONCE. Before the
+    # fix, as_h? on a String fragment returned nil and the args were dropped.
+    it "reconstructs streamed toolUse argument fragments through the accumulator" do
+      provider = configured_bedrock
+      accumulator = CrystalLLM::StreamAccumulator.new
+
+      start = JSON.parse(%({"contentBlockStart":{"start":{"toolUse":{"toolUseId":"tu_1","name":"weather"}}}}))
+      accumulator.add(provider.build_chunk(start))
+
+      [%({"city": "Par), %(is"})].each do |frag|
+        event = JSON.parse(%({"contentBlockDelta":{"delta":{"toolUse":{"input":#{frag.to_json}}}}}))
+        accumulator.add(provider.build_chunk(event))
+      end
+
+      calls = accumulator.to_message(nil).tool_calls
+      raise "no tool calls" unless calls
+      calls["tu_1"].name.should eq("weather")
+      calls["tu_1"].arguments["city"].as_s.should eq("Paris")
+    end
   end
 
   describe "#parse_list_models_response" do

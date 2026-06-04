@@ -234,9 +234,9 @@ module CrystalLLM
                  multiple_of : Float64? = nil) : Nil
         h = {"type" => JSON::Any.new("number")} of String => JSON::Any
         h["description"] = JSON::Any.new(description) if description
-        h["minimum"] = JSON::Any.new(minimum) if minimum
-        h["maximum"] = JSON::Any.new(maximum) if maximum
-        h["multipleOf"] = JSON::Any.new(multiple_of) if multiple_of
+        h["minimum"] = numeric_constraint(minimum) if minimum
+        h["maximum"] = numeric_constraint(maximum) if maximum
+        h["multipleOf"] = numeric_constraint(multiple_of) if multiple_of
         add(name, h, required)
       end
 
@@ -338,6 +338,18 @@ module CrystalLLM
         else
           raise InvalidArrayTypeError.new("Invalid array type: #{type.inspect}. " \
                                           "Must be a primitive type (:string, :number, :integer, :boolean, :null).")
+        end
+      end
+
+      # ruby_llm-schema emits an integer-valued numeric constraint (e.g.
+      # `minimum: 0`) as a JSON Integer, not a Float. A Float64 constraint that is
+      # integer-valued therefore serializes as `0` rather than `0.0`; a genuinely
+      # fractional value (e.g. `0.5`) stays a Float.
+      private def numeric_constraint(value : Float64) : JSON::Any
+        if value.finite? && value == value.to_i64
+          JSON::Any.new(value.to_i64)
+        else
+          JSON::Any.new(value)
         end
       end
 

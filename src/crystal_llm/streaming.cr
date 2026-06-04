@@ -6,6 +6,7 @@
 require "json"
 require "./sse"
 require "./stream_accumulator"
+require "./error_middleware"
 
 module CrystalLLM
   module Streaming
@@ -19,8 +20,16 @@ module CrystalLLM
 
       connection.post_stream(stream_url, payload, headers) do |response|
         response.body_io.each_line do |line|
-          parser.feed("#{line}\n") do |_type, data|
+          parser.feed("#{line}\n") do |type, data|
             next if data == "[DONE]"
+
+            # Surface streaming error events / error payloads as raised CrystalLLM
+            # errors (ruby_llm: handle_error_event / handle_data's error branch).
+            # An SSE `event: error`, or a data payload whose parsed Hash carries an
+            # `"error"` key, is mapped via the provider's parse_streaming_error and
+            # raised through ErrorMiddleware — instead of being fed to build_chunk.
+            raise_if_stream_error(type, data)
+
             json = parse_chunk_json(data)
             next unless json
 
@@ -32,6 +41,25 @@ module CrystalLLM
       end
 
       accumulator.to_message(nil)
+    end
+
+    # Raises a mapped CrystalLLM error when *data* represents a streaming error,
+    # either via an SSE `event: error` or an `"error"` key in the parsed payload.
+    # No-op for normal chunks.
+    private def raise_if_stream_error(type : String, data : String) : Nil
+      return unless type == "error" || error_payload?(data)
+
+      mapped = parse_streaming_error(data)
+      return unless mapped
+
+      status, message = mapped
+      ErrorMiddleware.parse_error(status, message, nil)
+    end
+
+    private def error_payload?(data : String) : Bool
+      json = parse_chunk_json(data)
+      return false unless json
+      (hash = json.as_h?) ? hash.has_key?("error") : false
     end
 
     private def parse_chunk_json(data : String) : JSON::Any?

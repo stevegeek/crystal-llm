@@ -51,6 +51,7 @@ require "./models"
 require "./provider"
 require "./context"
 require "./configuration"
+require "./deprecator"
 
 module CrystalLLM
   # Starts a new chat conversation. Mirrors `RubyLLM.chat`.
@@ -89,5 +90,13 @@ module CrystalLLM
   # ruby_llm's `yield ... if block_given?`, where the block is optional).
   def self.context : Context
     Context.create(config)
+  end
+
+  # The shared deprecation handler (memoized). Mirrors ruby_llm's
+  # `deprecator = @deprecator ||= Deprecator.new`.
+  @@deprecator : Deprecator?
+
+  def self.deprecator : Deprecator
+    @@deprecator ||= Deprecator.new
   end
 end

@@ -179,6 +179,12 @@ describe "Anthropic real-data parsers (cassette fixtures)" do
         call = calls.values.first
         call.id.should eq("toolu_01KyLFD3L6qKL1RqXTwTFN8A")
         call.name.should eq("weather")
+        # REGRESSION (BUG 1): the input_json_delta partial_json fragments
+        # (`{\"latit`, `ud`, `e\": \"52.520`, ...) must concatenate + parse ONCE
+        # into the full arguments. Before the fix each fragment parsed to {} and the
+        # args were dropped, leaving an EMPTY hash here.
+        call.arguments["latitude"]?.try(&.as_s).should eq("52.5200")
+        call.arguments["longitude"]?.try(&.as_s).should eq("13.4050")
       end
       msg.input_tokens.should eq(633)
       msg.output_tokens.should eq(75)
@@ -233,6 +239,36 @@ describe "Anthropic real-data parsers (cassette fixtures)" do
       msg.output_tokens.should eq(42)
     end
 
+    # REGRESSION (BUG 4): a streaming error event must be RAISED as a mapped
+    # CrystalLLM error, not fed to build_chunk (which would silently swallow it).
+    it "raises a mapped CrystalLLM error on an `event: error` stream event" do
+      provider = anthropic_provider
+      error_sse = <<-SSE
+        event: error
+        data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}
+
+
+        SSE
+
+      expect_raises(CrystalLLM::OverloadedError, /Overloaded/) do
+        stream_to_message(provider, error_sse)
+      end
+    end
+
+    # An error data payload (no `event: error`, but an `"error"` key) is also raised.
+    it "raises when a data payload carries an `error` key" do
+      provider = anthropic_provider
+      error_sse = <<-SSE
+        data: {"type":"error","error":{"type":"overloaded_error","message":"boom"}}
+
+
+        SSE
+
+      expect_raises(CrystalLLM::OverloadedError, /boom/) do
+        stream_to_message(provider, error_sse)
+      end
+    end
+
     it "accumulates the SSE-shaped chat_2 fixture into text + tokens" do
       provider = anthropic_provider
       body = read_cassette("chat_2.json")
@@ -257,9 +293,8 @@ end
 #   stream_4.sse is a text stream.
 #
 # Anthropic streaming tool-call arguments: the partial_json fragments
-# (`{\"latit`, `ud`, ...) are individually unparseable, and this port's
-# StreamAccumulator merges parsed-Hash args (not raw string fragments — see
-# stream_accumulator.cr divergence note). So a streamed tool call lands with its
-# id + name but EMPTY arguments. That is the documented behavior of the port, not
-# a parse failure; these tests assert id/name capture (which is what the wire
-# event actually pins down) rather than reconstructed arguments.
+# (`{\"latit`, `ud`, ...) are individually unparseable. The provider carries each
+# raw fragment String on ToolCall#raw_arguments; the StreamAccumulator concatenates
+# them and JSON.parses the whole once in to_message (matching ruby_llm). So a
+# streamed tool call lands with its id + name AND the fully reconstructed arguments
+# (latitude/longitude above) — the stream_1 test asserts both.

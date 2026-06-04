@@ -17,7 +17,8 @@
 #   `stream_error_status` are ported for that wiring.
 # - ToolCall ids/names are non-nil in CrystalLLM; ruby_llm's `nil`-keyed partial
 #   tool-call deltas become `""`-keyed here (the accumulator merges by buffer
-#   position — same convention as the OpenAI streaming port).
+#   position — same convention as the OpenAI streaming port). The toolUse input
+#   partial-JSON fragment rides on ToolCall#raw_arguments (parsed once at the end).
 # - thinking text/signature are extracted but not attached to the Chunk (Message#thinking
 #   deferred); reasoning_tokens ARE wired.
 require "json"
@@ -203,16 +204,20 @@ module CrystalLLM
 
       private def extract_tool_call_delta(event : JSON::Any) : Hash(String, ToolCall)?
         delta = normalized_delta(event)
-        input = delta.dig?("toolUse", "input").try(&.as_h?)
-        input ||= delta.dig?("tool_use", "input").try(&.as_h?)
-        if input.nil? && event.dig?("delta", "type").try(&.as_s?) == "input_json_delta"
-          input = event.dig?("delta", "partial_json").try(&.as_h?)
+
+        # Bedrock's ConverseStream toolUse `input` arrives as a raw partial-JSON
+        # String fragment (NOT a parsed object), same as Anthropic's partial_json.
+        raw = delta.dig?("toolUse", "input").try(&.as_s?)
+        raw ||= delta.dig?("tool_use", "input").try(&.as_s?)
+        if raw.nil? && event.dig?("delta", "type").try(&.as_s?) == "input_json_delta"
+          raw = event.dig?("delta", "partial_json").try(&.as_s?)
         end
-        return nil unless input
+        return nil if raw.nil?
 
         # ruby_llm keys this delta with `nil`; CrystalLLM ToolCall ids are non-nil, so
-        # the partial keys with "" (the accumulator merges by buffer position).
-        {"" => ToolCall.new(id: "", name: "", arguments: input)}
+        # the partial keys with "". The raw fragment rides on raw_arguments and the
+        # accumulator concatenates + parses the stream once (by buffer position).
+        {"" => ToolCall.new(id: "", name: "", raw_arguments: raw)}
       end
 
       # The delta object, normalized to a Hash. ruby_llm: contentBlockDelta.delta ||

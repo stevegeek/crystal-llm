@@ -62,6 +62,21 @@ module CrystalLLM
       raise "build_chunk must be implemented by #{self.class.provider_name}"
     end
 
+    # Maps a streaming error event's JSON payload to {status, message}, or nil when
+    # the payload is not an error this provider recognizes. Concrete providers that
+    # surface streaming errors (Anthropic/OpenAI) override this; the default makes a
+    # bare `error` key map to a generic 500 (so the stream loop still raises).
+    def parse_streaming_error(data : String) : Tuple(Int32, String)?
+      parsed = JSON.parse(data)
+      error = parsed["error"]?
+      return nil unless error
+
+      message = error.as_h?.try { |hash| hash["message"]?.try(&.as_s?) } || error.as_s? || ""
+      {500, message}
+    rescue JSON::ParseException
+      nil
+    end
+
     # ---- Identity ----
 
     def slug : String
@@ -105,7 +120,10 @@ module CrystalLLM
       if hash = parsed.as_h?
         extract_hash_error(hash)
       elsif array = parsed.as_a?
-        array.compact_map { |part| part.as_h?.try { |part_hash| extract_hash_error(part_hash) } }.join(". ")
+        # ruby_llm maps each part then `.join('. ')`. Ruby's `join` renders a nil
+        # element as "" (not dropped), so a nil message becomes an empty segment —
+        # use `... || ""` rather than `compact_map`, which would drop it.
+        array.map { |part| part.as_h?.try { |part_hash| extract_hash_error(part_hash) } || "" }.join(". ")
       else
         parsed.as_s?
       end

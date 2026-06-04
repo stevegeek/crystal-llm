@@ -15,9 +15,9 @@
 #   not split them on stream events). `parse_streaming_error` is ported for the streaming
 #   error-status mapping (overloaded_error -> 529, else 500).
 # - tool-call deltas: an `input_json_delta` carries a `partial_json` fragment. ToolCall#
-#   arguments is a typed Hash, so we best-effort-parse the fragment into a Hash keyed by
-#   "" (the StreamAccumulator merges fragments); a non-delta `content_block` is parsed
-#   via Tools.parse_tool_calls.
+#   arguments is a typed Hash (can't hold a partial), so the raw fragment String rides on
+#   ToolCall#raw_arguments keyed by "" and the StreamAccumulator concatenates + parses the
+#   fragments once; a non-delta `content_block` is parsed via Tools.parse_tool_calls.
 require "json"
 require "../anthropic"
 
@@ -94,21 +94,14 @@ module CrystalLLM
 
       private def extract_stream_tool_calls(data : JSON::Any) : Hash(String, ToolCall)?
         if json_delta?(data)
+          # Carry the raw partial_json fragment String through to the accumulator,
+          # which concatenates all fragments and parses the result once. Parsing
+          # each fragment in isolation here would yield {} (they are partials).
           fragment = data.dig?("delta", "partial_json").try(&.as_s?) || ""
-          arguments = parse_partial_json(fragment)
-          {"" => ToolCall.new(id: "", name: "", arguments: arguments)}
+          {"" => ToolCall.new(id: "", name: "", raw_arguments: fragment)}
         else
           Tools.parse_tool_calls(data["content_block"]?)
         end
-      end
-
-      # Best-effort parse of a streaming JSON fragment into an args hash; `{}` if it is
-      # a partial (the StreamAccumulator stitches fragments across chunks).
-      private def parse_partial_json(fragment : String) : Hash(String, JSON::Any)
-        return {} of String => JSON::Any if fragment.empty?
-        JSON.parse(fragment).as_h? || {} of String => JSON::Any
-      rescue JSON::ParseException
-        {} of String => JSON::Any
       end
 
       # Maps a streaming error event to {status, message}. Returns nil for a non-error.

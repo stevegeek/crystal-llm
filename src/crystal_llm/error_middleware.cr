@@ -16,6 +16,7 @@ module CrystalLLM
       /maximum context/i,
       /request too large/i,
       /too many tokens/i,
+      /token count exceeds/i,
       /input[_\s-]?token/i,
       /input or output tokens? must be reduced/i,
       /reduce the length of messages/i,

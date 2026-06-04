@@ -10,9 +10,19 @@ module CrystalLLM
     getter arguments : Hash(String, JSON::Any)
     property thought_signature : String?
 
+    # Streaming-only raw partial-JSON channel. ruby_llm keeps a tool call's
+    # `arguments` as a mutable String while streaming, appending raw JSON
+    # fragments and `JSON.parse`ing the concatenation in `to_message`. CrystalLLM's
+    # `arguments` is a typed `Hash(String, JSON::Any)` (it cannot hold a partial),
+    # so streaming providers deposit the raw fragment String here instead; the
+    # StreamAccumulator concatenates these and parses once. Nil on non-streaming
+    # tool calls.
+    getter raw_arguments : String?
+
     def initialize(@id : String, @name : String,
                    @arguments : Hash(String, JSON::Any) = {} of String => JSON::Any,
-                   @thought_signature : String? = nil)
+                   @thought_signature : String? = nil,
+                   @raw_arguments : String? = nil)
     end
 
     def to_h

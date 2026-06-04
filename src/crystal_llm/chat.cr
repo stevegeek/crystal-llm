@@ -54,6 +54,7 @@ require "./content"
 require "./tool"
 require "./tool_call"
 require "./thinking"
+require "./cost"
 require "./schema"
 require "./models"
 require "./model/info"
@@ -256,7 +257,15 @@ module CrystalLLM
     end
 
     def with_schema(schema : JSON::Any) : self
-      @schema = normalize_schema_payload(schema.as_h?)
+      # ruby_llm passes a raw schema through (it duck-types on `to_json_schema` /
+      # Hash). A non-object JSON envelope (array/scalar) has no schema shape to
+      # normalize; silently dropping it to nil hides a caller error, so raise
+      # instead of swallowing it.
+      hash = schema.as_h?
+      raise ArgumentError.new(
+        "with_schema(JSON::Any) requires a JSON object schema, got #{schema.raw.class}"
+      ) if hash.nil?
+      @schema = normalize_schema_payload(hash)
       self
     end
 
@@ -317,8 +326,11 @@ module CrystalLLM
       complete_once(&block)
     end
 
-    # DEFERRED: `cost` (Cost.aggregate over the message list isn't ported).
-    # See deferrals.
+    # Aggregate cost across all messages. Mirrors ruby_llm's
+    # `Cost.aggregate(messages.map(&:cost))`.
+    def cost : Cost
+      Cost.aggregate(@messages.map(&.cost.as(Cost?)))
+    end
 
     private def complete_once : Message
       response = @provider.complete(
@@ -439,13 +451,14 @@ module CrystalLLM
     # ---- Content + schema helpers ------------------------------------------
 
     private def build_content(message : String?, attachments : Attachable?) : String | Content | Nil
-      return message if message.nil? && attachments.nil?
+      # Bare-string fast path: a plain message with no attachments is "content-like"
+      # in ruby_llm and passes through untouched.
+      return message if !message.nil? && attachments.nil?
 
-      if attachments.nil?
-        message
-      else
-        Content.new(message, attachments)
-      end
+      # Otherwise construct Content (matches ruby_llm's `Content.new(message,
+      # attachments)`). When BOTH message and attachments are nil this deliberately
+      # lets Content.new raise the both-nil ArgumentError rather than swallowing it.
+      Content.new(message, attachments)
     end
 
     # Turns a tool result payload into message content (String or Content).

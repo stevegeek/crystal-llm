@@ -60,5 +60,17 @@ describe CrystalLLM::Provider do
       provider.parse_error(build_response(400, %({"error":"flat"}))).should eq("flat")
       provider.parse_error(build_response(400, "")).should be_nil
     end
+
+    # Regression (BUG 13): the array branch must join with ". " and render a
+    # nil/missing message as "" (ruby_llm's `.map { ... }.join('. ')`), NOT drop
+    # the entry. `compact_map` dropped nils, collapsing the segment count.
+    it "renders a nil message in an error array as an empty segment (not dropped)" do
+      config = CrystalLLM::Configuration.new
+      config.http_proxy = "set"
+      provider = ProviderSpecDummy.new(config)
+
+      body = %([{"error":"first"},{"no_error":true},{"error":{"message":"third"}}])
+      provider.parse_error(build_response(400, body)).should eq("first. . third")
+    end
   end
 end

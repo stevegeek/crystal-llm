@@ -76,4 +76,13 @@ describe "CrystalLLM facade" do
       ctx.config.default_model.should eq(CrystalLLM.config.default_model)
     end
   end
+
+  # Parity quick win: `CrystalLLM.deprecator` exposes the shared, memoized
+  # Deprecator (ruby_llm's `@deprecator ||= Deprecator.new`).
+  describe ".deprecator" do
+    it "returns a memoized Deprecator instance" do
+      CrystalLLM.deprecator.should be_a(CrystalLLM::Deprecator)
+      CrystalLLM.deprecator.should be(CrystalLLM.deprecator)
+    end
+  end
 end

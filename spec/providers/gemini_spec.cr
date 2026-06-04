@@ -253,6 +253,27 @@ describe CrystalLLM::Providers::Gemini do
       call.arguments["city"].as_s.should eq("Paris")
     end
 
+    # Bug 12 regression: a tool-only response (functionCall, no text parts) must
+    # carry content "" (not nil) to match ruby's `extract_text_parts || parse_content`.
+    it "yields empty-string content (not nil) for a tool-only response" do
+      body = <<-JSON
+      {
+        "candidates": [
+          {"content": {"parts": [
+            {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}}
+          ]}}
+        ],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 8}
+      }
+      JSON
+      provider = configured_gemini
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.tool_call?.should be_true
+      message.content.should eq("")
+      message.content.should_not be_nil
+    end
+
     it "raises on an error body" do
       body = %({"error": {"code": 400, "message": "bad key"}})
       provider = configured_gemini

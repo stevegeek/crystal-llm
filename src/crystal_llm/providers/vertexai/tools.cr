@@ -156,31 +156,70 @@ module CrystalLLM
       end
 
       # Converts one property schema; recurses for array items / nested objects.
+      # ameba:disable Metrics/CyclomaticComplexity
       private def convert_property(property_any : JSON::Any) : JSON::Any
         property_schema = property_any.as_h? || return JSON::Any.new({"type" => JSON::Any.new("STRING")} of String => JSON::Any)
 
-        type = param_type_for_gemini(property_schema["type"]?.try(&.as_s?))
+        # Collapse `anyOf` (the common `[T, null]` nullable shape) into a single
+        # schema with `nullable: true` before converting — mirrors gemini/tools.cr
+        # and ruby's inherited Gemini behaviour. The original is still consulted by
+        # copy_common_attributes so attributes outside the anyOf branch survive.
+        working = normalize_any_of_schema(property_schema) || property_schema
+
+        type = param_type_for_gemini(working["type"]?.try(&.as_s?))
         property = {"type" => JSON::Any.new(type)} of String => JSON::Any
 
         copy_common_attributes(property, property_schema)
+        copy_common_attributes(property, working)
 
         case type
         when "ARRAY"
-          items = property_schema["items"]? || JSON::Any.new({"type" => JSON::Any.new("string")} of String => JSON::Any)
+          items = working["items"]? || property_schema["items"]? ||
+                  JSON::Any.new({"type" => JSON::Any.new("string")} of String => JSON::Any)
           property["items"] = convert_property(items)
+          copy_tool_attributes(property, working, %w[minItems maxItems])
           copy_tool_attributes(property, property_schema, %w[minItems maxItems])
         when "OBJECT"
           nested = {} of String => JSON::Any
-          if props = property_schema["properties"]?.try(&.as_h?)
+          if props = (working["properties"]?.try(&.as_h?) || property_schema["properties"]?.try(&.as_h?))
             props.each { |key, value| nested[key] = convert_property(value) }
           end
           property["properties"] = JSON::Any.new(nested)
-          if req = property_schema["required"]?.try(&.as_a?)
+          if req = (working["required"]?.try(&.as_a?) || property_schema["required"]?.try(&.as_a?))
             property["required"] = JSON::Any.new(req.compact_map(&.as_s?).map { |name| JSON::Any.new(name) })
           end
         end
 
         JSON::Any.new(property)
+      end
+
+      # Collapses an `anyOf` (the common `[T, null]` nullable shape) into a single
+      # schema with `nullable: true`. Returns nil when there is no anyOf. Ported
+      # from gemini/tools.cr (which ports ruby's inherited Gemini behaviour).
+      private def normalize_any_of_schema(schema : Hash(String, JSON::Any)) : Hash(String, JSON::Any)?
+        any_of = schema["anyOf"]?.try(&.as_a?)
+        return nil if any_of.nil? || any_of.empty?
+
+        null_entries = [] of Hash(String, JSON::Any)
+        non_null = [] of Hash(String, JSON::Any)
+        any_of.each do |entry|
+          entry_hash = entry.as_h? || next
+          if (entry_hash["type"]?.try(&.as_s?)) == "null"
+            null_entries << entry_hash
+          else
+            non_null << entry_hash
+          end
+        end
+
+        if non_null.size == 1 && !null_entries.empty?
+          normalized = non_null.first.dup
+          normalized["nullable"] = JSON::Any.new(true)
+          normalized
+        elsif !non_null.empty?
+          non_null.first.dup
+        else
+          {"type" => JSON::Any.new("string"), "nullable" => JSON::Any.new(true)} of String => JSON::Any
+        end
       end
 
       private def copy_common_attributes(target : Hash(String, JSON::Any), source : Hash(String, JSON::Any)) : Nil

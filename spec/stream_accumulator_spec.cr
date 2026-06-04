@@ -85,6 +85,41 @@ describe CrystalLLM::StreamAccumulator do
       message.tool_calls.should be_nil
     end
 
+    # REGRESSION (BUG 1): raw partial-JSON fragments split across deltas must be
+    # concatenated and parsed ONCE. Each fragment is individually unparseable; the
+    # old hash-merge path dropped them and produced empty arguments.
+    it "concatenates raw_arguments fragments across deltas and parses once" do
+      accumulator = CrystalLLM::StreamAccumulator.new
+      # Leading delta: id + name, empty raw fragment (the OpenAI/Anthropic shape).
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: "weather", raw_arguments: "")}
+      ))
+      # Continuation deltas (id == "" marks a continuation), each an unparseable partial.
+      ["{\"lat", "itude\": \"52.5", "200\", \"lon", "gitude\": \"13.4050\"}"].each do |frag|
+        accumulator.add(CrystalLLM::Chunk.new(
+          role: :assistant, content: nil,
+          tool_calls: {"" => CrystalLLM::ToolCall.new(id: "", name: "", raw_arguments: frag)}
+        ))
+      end
+
+      tool_calls = accumulator.to_message(nil).tool_calls.should_not be_nil
+      args = tool_calls["call_1"].arguments
+      args["latitude"].as_s.should eq("52.5200")
+      args["longitude"].as_s.should eq("13.4050")
+    end
+
+    it "falls back to {} when the concatenated raw_arguments stream is invalid JSON" do
+      accumulator = CrystalLLM::StreamAccumulator.new
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: "x", raw_arguments: "{not json")}
+      ))
+
+      tool_calls = accumulator.to_message(nil).tool_calls.should_not be_nil
+      tool_calls["call_1"].arguments.should eq({} of String => JSON::Any)
+    end
+
     it "parses streamed JSON argument fragments into a Hash" do
       accumulator = CrystalLLM::StreamAccumulator.new
       tool_call = CrystalLLM::ToolCall.new(

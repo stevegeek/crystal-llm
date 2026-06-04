@@ -51,8 +51,14 @@ module CrystalLLM
     # Streaming POST: yields the crest response so the caller can read body_io.
     def post_stream(url : String, payload : String, headers : Hash(String, String) = {} of String => String, &block : Crest::Response ->) : Nil
       hdrs = provider_headers.merge(headers)
-      Crest.post(full_url(url), payload, headers: hdrs, json: false, read_timeout: @config.request_timeout.seconds) do |response|
-        block.call(response)
+      begin
+        Crest.post(full_url(url), payload, headers: hdrs, json: false, read_timeout: @config.request_timeout.seconds) do |response|
+          block.call(response)
+        end
+      rescue ex : Crest::RequestFailed
+        # A non-200 stream response (crest raises before yielding the body) maps to
+        # the same CrystalLLM error as a non-streaming #post.
+        map_error(ex.response)
       end
     end
 

@@ -1,5 +1,6 @@
 require "../spec_helper"
 require "../../src/crystal_llm/image"
+require "http/server"
 
 # Unit-level port of lib/ruby_llm/image.rb (@ 1.15.0). The upstream spec is
 # VCR/integration (live image generation); this exercises the pure data class.
@@ -22,9 +23,28 @@ describe CrystalLLM::Image do
       String.new(image.to_blob).should eq("PNGBYTES")
     end
 
-    it "raises (deferred) for url-backed images" do
-      image = CrystalLLM::Image.new(url: "https://example.com/a.png")
-      expect_raises(NotImplementedError) { image.to_blob }
+    # Parity quick win: a url-backed image fetches its bytes via
+    # `Connection.basic_get` (ruby_llm's `Connection.basic.get(url).body`) rather
+    # than raising. Served from a local in-process HTTP server (no external net).
+    it "fetches bytes for a url-backed image via Connection.basic_get" do
+      server = HTTP::Server.new do |context|
+        context.response.content_type = "image/png"
+        context.response.print("REMOTEBYTES")
+      end
+      address = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      begin
+        url = "http://#{address.address}:#{address.port}/a.png"
+        image = CrystalLLM::Image.new(url: url)
+        String.new(image.to_blob).should eq("REMOTEBYTES")
+      ensure
+        server.close
+      end
+    end
+
+    it "raises when an image has neither data nor url" do
+      image = CrystalLLM::Image.new
+      expect_raises(ArgumentError) { image.to_blob }
     end
   end
 

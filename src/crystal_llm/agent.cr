@@ -278,6 +278,37 @@ module CrystalLLM
       @chat.ask(message)
     end
 
+    # `method_missing` cannot forward a block or carry the `with:` attachment kwarg
+    # through (Crystal's macro `method_missing` only captures positional/named args,
+    # not a passed block). ruby_llm's `def_delegators` forwards both, so these
+    # explicit overloads delegate the block + attachment surface to `@chat`.
+
+    def ask(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil) : CrystalLLM::Message
+      @chat.ask(message, with: attachments)
+    end
+
+    def ask(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil,
+            &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+      @chat.ask(message, with: attachments, &block)
+    end
+
+    def say(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil) : CrystalLLM::Message
+      @chat.say(message, with: attachments)
+    end
+
+    def say(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil,
+            &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+      @chat.say(message, with: attachments, &block)
+    end
+
+    def each(&block : CrystalLLM::Message ->) : Nil
+      @chat.each(&block)
+    end
+
+    def complete(&block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+      @chat.complete(&block)
+    end
+
     macro method_missing(call)
       @chat.{{ call }}
     end

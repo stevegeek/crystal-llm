@@ -14,11 +14,13 @@ module CrystalLLM
   # `arguments` as a mutable String buffer while streaming, appending raw JSON
   # fragments, then `JSON.parse`s the buffer in `to_message`. CrystalLLM's
   # `ToolCall#arguments` is a typed `Hash(String, JSON::Any)` (design's JSONData
-  # shape), so a partial-JSON String cannot live there. Instead we accumulate
+  # shape), so a partial-JSON String cannot live there. Streaming providers carry
+  # the raw fragment on `ToolCall#raw_arguments` (a String channel); we accumulate
   # into private per-id buffers (`ToolCallBuffer`) and only materialize `ToolCall`
-  # values in `to_message`. Buffers hold either a raw JSON String fragment stream
-  # (parsed at the end) or pre-parsed Hash arguments (merged) — covering both the
-  # fragment-delta wire shape and providers that hand us already-parsed Hashes.
+  # values in `to_message`. A buffer concatenates the raw fragment stream and
+  # `JSON.parse`s it ONCE at the end (matching ruby_llm), or merges pre-parsed Hash
+  # arguments — covering both the fragment-delta wire shape and providers that hand
+  # us already-parsed Hashes.
   #
   # DEFERRAL (chunk-level structured thinking): `append_thinking_from_chunk`
   # reads `chunk.thinking`, but `Message#thinking` is itself deferred in this
@@ -114,15 +116,28 @@ module CrystalLLM
             name: tool_call.name,
             thought_signature: tool_call.thought_signature
           )
-          buffer.merge_arguments(tool_call.arguments)
+          ingest_arguments(buffer, tool_call)
           @tool_calls[tool_call.id] = buffer
           @latest_tool_call_id = tool_call.id
         elsif (latest = @latest_tool_call_id) && (existing = @tool_calls[latest]?)
-          existing.merge_arguments(tool_call.arguments)
+          ingest_arguments(existing, tool_call)
           if (sig = tool_call.thought_signature) && existing.thought_signature.nil?
             existing.thought_signature = sig
           end
         end
+      end
+    end
+
+    # Routes a delta's arguments into the buffer: a raw partial-JSON String
+    # fragment (the streaming wire shape — buffered + parsed once at the end) takes
+    # precedence; otherwise an already-parsed Hash is merged (providers that hand us
+    # parsed args, e.g. a non-delta content_block).
+    private def ingest_arguments(buffer : ToolCallBuffer, tool_call : ToolCall) : Nil
+      raw = tool_call.raw_arguments
+      if raw
+        buffer.append_fragment(raw)
+      else
+        buffer.merge_arguments(tool_call.arguments)
       end
     end
 
@@ -223,15 +238,18 @@ module CrystalLLM
     end
 
     # Private streaming buffer for one tool call. Holds metadata plus the
-    # progressively-merged parsed arguments, then materializes an immutable
+    # progressively-accumulated arguments, then materializes an immutable
     # `ToolCall` in `to_message`.
     #
-    # NOTE: ruby_llm appends raw JSON String fragments here and parses once at the
-    # end. CrystalLLM's wire `ToolCall` already carries a parsed
-    # `Hash(String, JSON::Any)` (the typed-arguments divergence on the class
-    # docstring), so continuation deltas are merged hash-wise rather than
-    # string-concatenated. When a streaming provider that emits raw fragments is
-    # ported, give it a place to deposit fragments and parse them here.
+    # Two argument channels, mirroring the two wire shapes:
+    # - raw partial-JSON String fragments (`append_fragment`): the streaming wire
+    #   shape — each per-event fragment (e.g. `{"latit`, `ud`, `e": ...`) is
+    #   individually unparseable, so we concatenate them and `JSON.parse` ONCE in
+    #   `to_tool_call` (ruby_llm's behavior). Falls back to `{}` on empty/parse-error.
+    # - already-parsed Hash arguments (`merge_arguments`): providers that hand us
+    #   parsed args (e.g. Anthropic's non-delta `content_block`) merge hash-wise.
+    # When any raw fragment was appended, the parsed-buffer wins (it is the
+    # authoritative reconstruction of the streamed args).
     private class ToolCallBuffer
       getter id : String
       getter name : String
@@ -239,6 +257,12 @@ module CrystalLLM
 
       def initialize(@id : String, @name : String, @thought_signature : String? = nil)
         @parsed = {} of String => JSON::Any
+        @raw_buffer = nil.as(String?)
+      end
+
+      # Appends a raw partial-JSON String fragment (parsed once in `to_tool_call`).
+      def append_fragment(fragment : String) : Nil
+        @raw_buffer = (@raw_buffer || "") + fragment
       end
 
       # Merges parsed Hash arguments from a delta into the buffer.
@@ -250,9 +274,21 @@ module CrystalLLM
         ToolCall.new(
           id: @id,
           name: @name,
-          arguments: @parsed,
+          arguments: resolved_arguments,
           thought_signature: @thought_signature
         )
+      end
+
+      # Prefers the concatenated raw-fragment stream (parsed once); falls back to the
+      # merged parsed Hash when no raw fragments were seen. `{}` on empty/parse error.
+      private def resolved_arguments : Hash(String, JSON::Any)
+        raw = @raw_buffer
+        return @parsed if raw.nil?
+        return {} of String => JSON::Any if raw.empty?
+
+        JSON.parse(raw).as_h? || {} of String => JSON::Any
+      rescue JSON::ParseException
+        {} of String => JSON::Any
       end
     end
   end

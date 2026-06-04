@@ -241,6 +241,34 @@ describe CrystalLLM::Chat do
       schema["name"].as_s.should eq("person")
       schema["schema"].as_h["properties"].as_h.has_key?("name").should be_true
     end
+
+    # Regression (BUG 11): a non-object JSON::Any schema (e.g. a bare array) was
+    # silently `as_h?`-dropped to nil, leaving @schema unset. It must now raise
+    # rather than swallow the caller's malformed schema.
+    it "raises (not silently nils) for a non-object JSON::Any schema" do
+      chat = new_chat
+      expect_raises(ArgumentError, "requires a JSON object schema") do
+        chat.with_schema(JSON.parse(%([1, 2, 3])))
+      end
+    end
+
+    it "accepts a valid JSON::Any object schema" do
+      chat = new_chat.with_schema(JSON.parse(%({"name":"person","schema":{"type":"object"}})))
+      chat.schema.should_not be_nil
+      chat.schema.as(JSON::Any).as_h["name"].as_s.should eq("person")
+    end
+  end
+
+  describe "#ask content building" do
+    # Regression (BUG 10): when message AND attachments are both nil, ruby_llm
+    # builds Content.new(nil, nil), which raises ArgumentError ("both nil"). The
+    # port previously returned nil, swallowing the error.
+    it "raises ArgumentError when both message and attachments are nil" do
+      chat = new_chat
+      expect_raises(ArgumentError, "both nil") do
+        chat.ask(nil)
+      end
+    end
   end
 
   describe "Enumerable" do
@@ -261,6 +289,25 @@ describe CrystalLLM::Chat do
       chat.messages.empty?.should be_false
       chat.reset_messages!
       chat.messages.empty?.should be_true
+    end
+  end
+
+  # Parity quick win: Chat#cost aggregates Cost over the message list
+  # (ruby_llm's `Cost.aggregate(messages.map(&:cost))`).
+  describe "#cost" do
+    it "aggregates the per-message costs" do
+      ChatSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "hi",
+          input_tokens: 10, output_tokens: 5),
+      ]
+      chat = new_chat
+      chat.ask("hello")
+
+      cost = chat.cost
+      cost.should be_a(CrystalLLM::Cost)
+      # The model is `assume_model_exists` (no pricing), so token amounts have no
+      # price and `total` is nil — but the aggregate is still produced.
+      cost.tokens?.should be_true
     end
   end
 end

@@ -1,6 +1,7 @@
 # ported from lib/ruby_llm/image.rb @ ruby_llm 1.15.0
 require "base64"
 require "./tokens"
+require "./connection"
 
 module CrystalLLM
   # Represents a generated image from an AI model.
@@ -41,15 +42,15 @@ module CrystalLLM
     end
 
     # Returns the raw image bytes. For a base64 image this decodes `data`; for a
-    # url-backed image, fetching is DEFERRED until the Connection layer lands
-    # (ruby_llm uses `Connection.basic.get(url).body`).
+    # url-backed image it fetches the bytes via `Connection.basic_get` (ruby_llm's
+    # `Connection.basic.get(url).body`).
     def to_blob : Bytes
       if encoded = @data
         Base64.decode(encoded)
+      elsif fetch_url = @url
+        Connection.basic_get(fetch_url).body.to_slice
       else
-        raise NotImplementedError.new(
-          "Image#to_blob for url-backed images is deferred until the Connection layer is ported"
-        )
+        raise ArgumentError.new("Image has neither data nor url to materialize")
       end
     end
 
