@@ -17,9 +17,9 @@
 #   `before_message`/`after_message`/`before_tool_call`/`after_tool_result`, each
 #   stacking blocks in `@callbacks`. The **legacy** single-slot `on_new_message` /
 #   `on_end_message` / `on_tool_call` / `on_tool_result` aliases (deprecated in
-#   ruby_llm, removed in 2.0) are DEFERRED — they require the deprecator warning
-#   plumbing and add a parallel `@on` dispatch path for no new behaviour. Noted in
-#   the return deferrals.
+#   ruby_llm, removed in 2.0) are now ported as deprecation-emitting *aliases* that
+#   register into the modern additive arrays (rather than ruby_llm's parallel
+#   single-slot `@on` dispatch). See the "legacy single-slot aliases" section.
 #
 # * `complete` has no `block_given?`: it is two overloads (sync returning Message,
 #   streaming taking `&block : CrystalLLM::Chunk ->`) mirroring Provider#complete. The
@@ -36,8 +36,9 @@
 # * `with_schema` accepts a raw json-schema (`JSON::Any` / `Hash(String,
 #   JSON::Any)`) OR a `CrystalLLM::Schema` instance (→ `to_json_schema`). The
 #   normalized payload is the `{name, schema, strict}` envelope `Provider`'s
-#   render_payload reads via `as_h?`. The typed `ask_as(T)` / `with_schema(T)`
-#   class hatch is DEFERRED (needs the typed-deserialization layer).
+#   render_payload reads via `as_h?`. The typed `with_schema(T)` / `ask_as(msg, T)`
+#   hatch is now ported as `forall T` overloads that derive the schema from `T`'s
+#   instance vars and deserialize via `T.from_json` (see the typed-hatch section).
 #
 # * Cost aggregation (`Chat#cost` → `Cost.aggregate`) is DEFERRED (Cost.aggregate
 #   over a message list isn't ported). Noted in deferrals.
@@ -275,6 +276,130 @@ module CrystalLLM
       self
     end
 
+    # ---- Typed structured-output hatch (APPROVED additive divergence) ------
+    #
+    # ruby_llm passes a *schema class* to `with_schema`/`ask` and reads the result
+    # back as a parsed Hash. Crystal can't store an arbitrary type as runtime state
+    # and can't change `ask`'s return type from instance state, so the typed path is
+    # an additive pair (design §"Structured output (R3)" / PORTING.md #11):
+    #
+    #   * `with_schema(T)` — a `forall T` overload that derives a JSON schema from
+    #     `T`'s instance vars and sets it as the response_format schema; returns
+    #     `self`. (Content read via `ask` + manual `T.from_json`.)
+    #   * `ask_as(message, T)` — `with_schema(T)`, run `ask`, then deserialize the
+    #     assistant message's String content via `T.from_json`, returning a `T`.
+    #
+    # These are real method overloads — the `T.class` argument is distinct from the
+    # `Schema` / `Hash` / `JSON::Any` overloads above, so they coexist. (A macro of
+    # the same name would be shadowed by the existing methods: Crystal only falls
+    # back to a same-named macro when NO method matches the call arity.) `T` must
+    # include `JSON::Serializable`. The schema is derived inside the `forall T` body
+    # by walking `T.instance_vars` (a compile-time reflection that resolves to
+    # concrete code per instantiated `T` — the ordinary-method-body context where
+    # `instance_vars` is legal): each ivar becomes a property; nilable ivars are
+    # optional, the rest required. The wire property name honors any
+    # `@[JSON::Field(key: "...")]` annotation. The raw `JSON::Any` / `Hash` /
+    # `Schema` paths above are untouched.
+
+    # Sets a typed schema derived from struct type `T` and returns `self`.
+    def with_schema(klass : T.class) : self forall T
+      with_schema(derive_typed_schema(klass))
+    end
+
+    # Runs `ask` constrained to schema `T` and deserializes the response into a `T`.
+    # The assistant message content is a JSON String (the schema constrains the
+    # provider to emit one); `T.from_json` does the authoritative typing.
+    def ask_as(message : String?, klass : T.class, with attachments : Attachable? = nil) : T forall T
+      content = with_schema(klass).ask(message, with: attachments).content
+      unless content.is_a?(String)
+        raise SchemaResponseError.new(
+          "ask_as(#{T}) expected a String JSON response, got #{content.class}"
+        )
+      end
+      T.from_json(content)
+    end
+
+    # Derives the `{name, schema}` envelope (`Hash(String, JSON::Any)`) for struct
+    # type `T`. Walks `T.instance_vars`: each ivar is a property keyed by its
+    # `@[JSON::Field(key:)]` (or ivar name); non-nilable ivars are `required`. The
+    # `instance_vars` walk runs in this `forall T` body (an ordinary method body —
+    # the place `instance_vars` resolves; see the crystal macros reference).
+    private def derive_typed_schema(klass : T.class) : Hash(String, JSON::Any) forall T
+      properties = {} of String => JSON::Any
+      required = [] of JSON::Any
+
+      {% for ivar in T.instance_vars %}
+        {%
+          ann = ivar.annotation(::JSON::Field)
+          key = (ann && ann[:key]) ? ann[:key] : ivar.name.stringify
+          it = ivar.type
+          # Drop Nil from a union so e.g. `String?` schemas as a plain string; the
+          # nilability is encoded as "not required" in the parent object.
+          non_nil = it.union? ? it.union_types.reject(&.==(Nil)) : [it]
+          single = non_nil.size == 1 ? non_nil[0] : nil
+          nilable = it.nilable?
+        %}
+        {% if single == nil %}
+          # A multi-member (non-nilable) union has no single JSON type — emit an
+          # unconstrained object; from_json does the authoritative typing.
+          properties[{{key}}] = JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)
+        {% else %}
+          properties[{{key}}] = JSON::Any.new(json_fragment_for({{single}}))
+        {% end %}
+        {% unless nilable %}
+          required << JSON::Any.new({{key}})
+        {% end %}
+      {% end %}
+
+      schema = {} of String => JSON::Any
+      schema["type"] = JSON::Any.new("object")
+      schema["properties"] = JSON::Any.new(properties)
+      schema["required"] = JSON::Any.new(required)
+      schema["additionalProperties"] = JSON::Any.new(false)
+
+      envelope = {} of String => JSON::Any
+      envelope["name"] = JSON::Any.new(self.class.schema_name_for({{ T.name(generic_args: false).stringify }}))
+      envelope["schema"] = JSON::Any.new(schema)
+      envelope
+    end
+
+    # Maps a single (non-union) Crystal type to a JSON-schema fragment
+    # `Hash(String, JSON::Any)`. Recurses into `Array(T)` for the item schema.
+    # `Hash`/struct/unknown types fall back to an unconstrained object — the
+    # provider still gets a valid schema, and `from_json` does the real typing.
+    # `type_node` is interpolated as a type reference (a `Path`), so `.resolve`
+    # turns it back into a `TypeNode`.
+    macro json_fragment_for(type_node)
+      {% begin %}
+        {% base = type_node.resolve %}
+        {% if base <= String %}
+          {"type" => JSON::Any.new("string")} of String => JSON::Any
+        {% elsif base <= Bool %}
+          {"type" => JSON::Any.new("boolean")} of String => JSON::Any
+        {% elsif base <= Int %}
+          {"type" => JSON::Any.new("integer")} of String => JSON::Any
+        {% elsif base <= Float %}
+          {"type" => JSON::Any.new("number")} of String => JSON::Any
+        {% elsif base <= Array %}
+          {
+            "type"  => JSON::Any.new("array"),
+            "items" => JSON::Any.new(CrystalLLM::Chat.json_fragment_for({{ base.type_vars[0] }})),
+          } of String => JSON::Any
+        {% else %}
+          {"type" => JSON::Any.new("object")} of String => JSON::Any
+        {% end %}
+      {% end %}
+    end
+
+    # Sanitizes a derived struct name into a schema name (drops namespace `::`,
+    # keeps schema-name-safe chars). Class-level so `derive_typed_schema` can reach
+    # it as `self.class.schema_name_for`.
+    def self.schema_name_for(name : String) : String
+      bare = name.split("::").last
+      sanitized = bare.gsub(/[^a-zA-Z0-9_-]/, "_")
+      sanitized.empty? ? "response" : sanitized
+    end
+
     # ---- Callbacks (modern, additive) --------------------------------------
 
     def before_message(&block : Message ->) : self
@@ -293,6 +418,48 @@ module CrystalLLM
     def after_tool_result(&block : ToolResult ->) : self
       (@tool_result_callbacks["after_tool_result"] ||= [] of ToolResult ->) << block
       self
+    end
+
+    # ---- Callbacks (legacy single-slot aliases, deprecated) ----------------
+    #
+    # ruby_llm keeps `on_new_message` / `on_end_message` / `on_tool_call` /
+    # `on_tool_result` working but deprecated (removed in 2.0). It stores them in a
+    # separate single-slot `@on` hash dispatched alongside the additive callbacks.
+    #
+    # DIVERGENCE: rather than maintaining a parallel single-slot dispatch path, the
+    # port registers each legacy callback as an *alias* into the corresponding
+    # modern additive array (`on_new_message` → `before_message`, etc.). This is
+    # behaviourally equivalent for the supported single-registration use (the block
+    # fires at the same point) and reuses the existing dispatch. Each call emits the
+    # same deprecation warning ruby_llm does, via the configured `Deprecator`. The
+    # only observable difference from ruby_llm: registering twice STACKS (both run)
+    # instead of last-wins — additive semantics, which is strictly more forgiving.
+
+    def on_new_message(&block : Message ->) : self
+      warn_legacy_callback("on_new_message", "before_message")
+      before_message(&block)
+    end
+
+    def on_end_message(&block : Message ->) : self
+      warn_legacy_callback("on_end_message", "after_message")
+      after_message(&block)
+    end
+
+    def on_tool_call(&block : ToolCall ->) : self
+      warn_legacy_callback("on_tool_call", "before_tool_call")
+      before_tool_call(&block)
+    end
+
+    def on_tool_result(&block : ToolResult ->) : self
+      warn_legacy_callback("on_tool_result", "after_tool_result")
+      after_tool_result(&block)
+    end
+
+    private def warn_legacy_callback(legacy_name : String, additive_name : String) : Nil
+      CrystalLLM.deprecator.warn(
+        "`#{legacy_name}` is deprecated and will be removed in CrystalLLM 2.0. " \
+        "Use `#{additive_name}` instead."
+      )
     end
 
     # ---- Enumerable + message access ---------------------------------------

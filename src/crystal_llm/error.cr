@@ -33,6 +33,11 @@ module CrystalLLM
 
   class ModelNotFoundError < Exception; end
 
+  # Raised by the typed structured-output hatch (`Chat#ask_as`) when the assistant
+  # response content is not the expected JSON String (e.g. a tool-call message or
+  # structured Content), so `T.from_json` cannot run.
+  class SchemaResponseError < Exception; end
+
   # Raised when CrystalLLM cannot format an attachment for the selected provider.
   class UnsupportedAttachmentError < Exception
     GUIDANCE = "Consider using a model that supports this attachment type."

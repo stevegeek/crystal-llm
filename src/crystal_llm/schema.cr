@@ -52,10 +52,22 @@ module CrystalLLM
   #   `validator.rb` — DFS-based circular-reference detection over `$defs`. The
   #   `to_json_schema` / `to_json` entry points run `validate!` first, as Ruby does.
   #
-  # == Still deferred (faithful port, later phase) ==
+  # == Now ported (this phase) — conditionals ==
   #
-  # * Conditionals: `requires` / `given` / `dependent` and the `allOf` /
-  #   `dependentRequired` / `dependentSchemas` output. (Out of scope here.)
+  # * `requires:` keyword on any property declaration (string/number/.../object/
+  #   array/any_of/one_of): the property, when present, requires the listed
+  #   fields — emitted as `dependentRequired`.
+  # * `given(prop: value, ...) { |c| c.requires(...); c.validates(...);
+  #   c.otherwise { |o| ... } }` — an if/then(/else) conditional, emitted as a
+  #   single inline `if`/`then`/`else` when there is one `given`, or wrapped in
+  #   `allOf` when there are several.
+  # * `dependent(prop) { |b| b.requires(...); b.validates(...) }` — a schema-level
+  #   dependency: when `prop` is present the block's constraints apply. Emitted as
+  #   `dependentRequired` (when only `requires`) or `dependentSchemas`.
+  #
+  # Crystal divergence: Ruby uses `instance_eval` so the conditional block reads
+  # as bare `requires`/`validates`/`otherwise` calls. Here the block takes an
+  # explicit builder/context parameter (`|c|`, `|b|`, `|o|`).
   class Schema
     # Per-subclass DSL state. Class variables are isolated per subclass in
     # Crystal; `macro inherited` re-initializes them so each subclass starts clean.
@@ -65,6 +77,10 @@ module CrystalLLM
     @@additional_properties = false
     @@strict : Bool? = true
     @@definitions = {} of String => JSON::Any
+    # `given` conditionals (each an if/then[/else] schema fragment) and
+    # `dependent`/`requires:` dependencies (property name => builder).
+    @@conditions = [] of Hash(String, JSON::Any)
+    @@dependencies = {} of String => ConditionalBuilder
 
     macro inherited
       @@builder = Builder.new
@@ -73,6 +89,8 @@ module CrystalLLM
       @@additional_properties = false
       @@strict = true
       @@definitions = {} of String => JSON::Any
+      @@conditions = [] of Hash(String, JSON::Any)
+      @@dependencies = {} of String => CrystalLLM::Schema::ConditionalBuilder
     end
 
     # The accumulated properties for this schema class.
@@ -128,54 +146,65 @@ module CrystalLLM
     def self.string(name : String, description : String? = nil, required : Bool = true,
                     "enum" enum_values : Array(String)? = nil, min_length : Int32? = nil,
                     max_length : Int32? = nil, pattern : String? = nil,
-                    format : String? = nil) : Nil
+                    format : String? = nil, requires : Array(String)? = nil) : Nil
       @@builder.string(name, description: description, required: required, enum_values: enum_values,
         min_length: min_length, max_length: max_length, pattern: pattern, format: format)
+      register_requires(name, requires)
     end
 
     def self.number(name : String, description : String? = nil, required : Bool = true,
                     minimum : Float64? = nil, maximum : Float64? = nil,
-                    multiple_of : Float64? = nil) : Nil
+                    multiple_of : Float64? = nil, requires : Array(String)? = nil) : Nil
       @@builder.number(name, description: description, required: required,
         minimum: minimum, maximum: maximum, multiple_of: multiple_of)
+      register_requires(name, requires)
     end
 
     def self.integer(name : String, description : String? = nil, required : Bool = true,
                      minimum : Int32? = nil, maximum : Int32? = nil,
-                     multiple_of : Int32? = nil) : Nil
+                     multiple_of : Int32? = nil, requires : Array(String)? = nil) : Nil
       @@builder.integer(name, description: description, required: required,
         minimum: minimum, maximum: maximum, multiple_of: multiple_of)
+      register_requires(name, requires)
     end
 
-    def self.boolean(name : String, description : String? = nil, required : Bool = true) : Nil
+    def self.boolean(name : String, description : String? = nil, required : Bool = true,
+                     requires : Array(String)? = nil) : Nil
       @@builder.boolean(name, description: description, required: required)
+      register_requires(name, requires)
     end
 
-    def self.null(name : String, description : String? = nil, required : Bool = true) : Nil
+    def self.null(name : String, description : String? = nil, required : Bool = true,
+                  requires : Array(String)? = nil) : Nil
       @@builder.null(name, description: description, required: required)
+      register_requires(name, requires)
     end
 
     # --- Complex DSL (class-body) -------------------------------------------
 
     # Nested object. Takes an explicit builder block (Crystal divergence).
     def self.object(name : String, description : String? = nil, required : Bool = true,
-                    &block : Builder ->) : Nil
+                    requires : Array(String)? = nil, &block : Builder ->) : Nil
       @@builder.object(name, description: description, required: required, &block)
+      register_requires(name, requires)
     end
 
     # Array of primitives (`of: :string`) or of objects (via builder block).
     def self.array(name : String, description : String? = nil, required : Bool = true,
                    of : Symbol? = nil, min_items : Int32? = nil, max_items : Int32? = nil,
-                   &block : Builder ->) : Nil
+                   requires : Array(String)? = nil, &block : Builder ->) : Nil
       @@builder.array(name, description: description, required: required, of: of,
         min_items: min_items, max_items: max_items, &block)
+      register_requires(name, requires)
     end
 
     # Array of primitives only (no item block).
     def self.array(name : String, description : String? = nil, required : Bool = true,
-                   of : Symbol? = nil, min_items : Int32? = nil, max_items : Int32? = nil) : Nil
+                   of : Symbol? = nil, min_items : Int32? = nil, max_items : Int32? = nil,
+                   requires : Array(String)? = nil) : Nil
       @@builder.array(name, description: description, required: required, of: of,
         min_items: min_items, max_items: max_items)
+      register_requires(name, requires)
     end
 
     # --- Composition DSL (class-body) ---------------------------------------
@@ -184,14 +213,16 @@ module CrystalLLM
     # receives a member builder; each `m.string` / `m.object { ... }` /
     # `m.reference(...)` appends an alternative to the `anyOf` list.
     def self.any_of(name : String, description : String? = nil, required : Bool = true,
-                    &block : MemberBuilder ->) : Nil
+                    requires : Array(String)? = nil, &block : MemberBuilder ->) : Nil
       @@builder.any_of(name, description: description, required: required, &block)
+      register_requires(name, requires)
     end
 
     # `one_of`: the value validates against EXACTLY ONE member schema.
     def self.one_of(name : String, description : String? = nil, required : Bool = true,
-                    &block : MemberBuilder ->) : Nil
+                    requires : Array(String)? = nil, &block : MemberBuilder ->) : Nil
       @@builder.one_of(name, description: description, required: required, &block)
+      register_requires(name, requires)
     end
 
     # `optional`: sugar for `any_of` whose members are the block's members plus a
@@ -229,6 +260,111 @@ module CrystalLLM
         {"$ref" => JSON::Any.new("#")}
       else
         {"$ref" => JSON::Any.new("#/$defs/#{name}")}
+      end
+    end
+
+    # --- Conditionals DSL (class-body) --------------------------------------
+
+    # The accumulated `given` conditions (if/then[/else] fragments).
+    def self.conditions : Array(Hash(String, JSON::Any))
+      @@conditions
+    end
+
+    # The accumulated `requires:`/`dependent` dependencies (property => builder).
+    def self.dependencies : Hash(String, ConditionalBuilder)
+      @@dependencies
+    end
+
+    # Register a `requires:` dependency: when `property` is present the listed
+    # fields are required (emitted as `dependentRequired`). Mirrors the Ruby
+    # `add_property(..., requires:)` path. No-op when `fields` is nil/empty.
+    protected def self.register_requires(property : String, fields : Array(String)?) : Nil
+      return if fields.nil? || fields.empty?
+      builder = ConditionalBuilder.new
+      builder.requires(fields)
+      @@dependencies[property] = builder
+    end
+
+    # `dependent(property) { |b| ... }`: a schema-level dependency. When
+    # `property` is present, the block's `requires`/`validates` constraints
+    # apply. Emitted as `dependentRequired` (requires-only) or `dependentSchemas`.
+    def self.dependent(property : String, &block : ConditionalBuilder ->) : Nil
+      builder = ConditionalBuilder.new
+      block.call(builder)
+      @@dependencies[property] = builder
+    end
+
+    # `given(conditions) { |c| ... }`: an if/then[/else] conditional. The
+    # `conditions` map is property name => the value that must match (coerced
+    # like the Ruby `coerce_condition`: an Array becomes `enum`, a Hash is used
+    # verbatim, anything else becomes `const`). The block's `c.requires` /
+    # `c.validates` build the `then`; `c.otherwise { |o| ... }` builds the
+    # `else`. Raises when `conditions` is empty (mirrors Ruby's ArgumentError).
+    def self.given(conditions : Hash(String, JSON::Any), &block : ConditionalContext ->) : Nil
+      raise InvalidSchemaError.new("given requires at least one property condition") if conditions.empty?
+
+      if_props = {} of String => JSON::Any
+      required = [] of JSON::Any
+      conditions.each do |prop, value|
+        if_props[prop] = coerce_condition(value)
+        required << JSON::Any.new(prop)
+      end
+      if_schema = {} of String => JSON::Any
+      if_schema["properties"] = JSON::Any.new(if_props)
+      if_schema["required"] = JSON::Any.new(required)
+
+      then_builder = ConditionalBuilder.new
+      else_builder = ConditionalBuilder.new
+      context = ConditionalContext.new(then_builder, else_builder)
+      block.call(context)
+
+      condition = {} of String => JSON::Any
+      condition["if"] = JSON::Any.new(if_schema)
+      condition["then"] = JSON::Any.new(then_builder.to_schema)
+      condition["else"] = JSON::Any.new(else_builder.to_schema) unless else_builder.empty?
+
+      @@conditions << condition
+    end
+
+    # Coerce a `given` condition value into a JSON-Schema constraint fragment,
+    # mirroring Ruby's `coerce_condition`. Array => `{enum: ...}`, a hash (passed
+    # as a `JSON::Any` object) => used verbatim, otherwise => `{const: value}`.
+    private def self.coerce_condition(value : JSON::Any) : JSON::Any
+      if arr = value.as_a?
+        JSON::Any.new({"enum" => JSON::Any.new(arr)})
+      elsif value.as_h?
+        value
+      else
+        JSON::Any.new({"const" => value})
+      end
+    end
+
+    # Merge `given` conditions and `requires:`/`dependent` dependencies into the
+    # produced schema hash. Faithful port of `Conditionals#merge_conditions`:
+    # a single condition is merged inline, several wrap in `allOf`; dependencies
+    # with only `requires` go to `dependentRequired`, others to `dependentSchemas`.
+    protected def self.merge_conditions(schema : Hash(String, JSON::Any)) : Nil
+      if conditions.size == 1
+        conditions.first.each { |key, value| schema[key] = value }
+      elsif conditions.size > 1
+        schema["allOf"] = JSON::Any.new(conditions.map { |cond| JSON::Any.new(cond) })
+      end
+
+      unless dependencies.empty?
+        dependent_required = {} of String => JSON::Any
+        dependent_schemas = {} of String => JSON::Any
+
+        dependencies.each do |property, builder|
+          if builder.validations_empty?
+            dependent_required[property] =
+              JSON::Any.new(builder.required_fields.map { |field| JSON::Any.new(field) })
+          else
+            dependent_schemas[property] = JSON::Any.new(builder.to_schema)
+          end
+        end
+
+        schema["dependentRequired"] = JSON::Any.new(dependent_required) unless dependent_required.empty?
+        schema["dependentSchemas"] = JSON::Any.new(dependent_schemas) unless dependent_schemas.empty?
       end
     end
 
@@ -287,6 +423,8 @@ module CrystalLLM
       unless self.class.definitions.empty?
         schema["$defs"] = JSON::Any.new(self.class.definitions)
       end
+
+      self.class.merge_conditions(schema)
 
       result = {} of String => JSON::Any
       result["name"] = JSON::Any.new(@name)
@@ -579,6 +717,103 @@ module CrystalLLM
         prop = @scratch.properties["__m"]
         @members << prop.as_h.dup
         @scratch = Builder.new
+      end
+    end
+
+    # Builds the `then`/`else` (and `dependent`) sub-schema fragments for the
+    # conditionals DSL. Faithful port of `Conditionals::ConditionalBuilder`:
+    # `requires` accumulates required field names; `validates` accumulates a
+    # per-field constraint map. `to_schema` emits `{required, properties}`.
+    #
+    # Crystal divergence: `validates` values are `JSON::Any` (wire convention)
+    # and the option set is passed via named args rather than a Ruby `**options`
+    # splat — unknown options are a compile error rather than a runtime raise.
+    class ConditionalBuilder
+      @required = [] of String
+      @validations = {} of String => JSON::Any
+
+      # Mark fields as required when the condition holds.
+      def requires(*fields : String) : Nil
+        fields.each { |field| @required << field }
+      end
+
+      # :ditto: (Array form, used by the `requires:` keyword path.)
+      def requires(fields : Array(String)) : Nil
+        fields.each { |field| @required << field }
+      end
+
+      # Add a constraint set for `field`. Each non-nil option maps to its
+      # JSON-Schema key (mirrors Ruby's `VALIDATES_KEY_MAP`). `not_value` becomes
+      # `{"not" => {"const" => value}}`; `type` is stringified.
+      def validates(field : String, type : String? = nil, const : JSON::Any? = nil,
+                    "enum" enum_values : Array(JSON::Any)? = nil, not_value : JSON::Any? = nil,
+                    min_length : Int32? = nil, max_length : Int32? = nil,
+                    pattern : String? = nil, minimum : (Int32 | Float64)? = nil,
+                    maximum : (Int32 | Float64)? = nil) : Nil
+        constraints = {} of String => JSON::Any
+        constraints["type"] = JSON::Any.new(type) if type
+        constraints["const"] = const if const
+        constraints["enum"] = JSON::Any.new(enum_values) if enum_values
+        constraints["not"] = JSON::Any.new({"const" => not_value}) if not_value
+        constraints["minLength"] = JSON::Any.new(min_length.to_i64) if min_length
+        constraints["maxLength"] = JSON::Any.new(max_length.to_i64) if max_length
+        constraints["pattern"] = JSON::Any.new(pattern) if pattern
+        constraints["minimum"] = numeric(minimum) if minimum
+        constraints["maximum"] = numeric(maximum) if maximum
+        @validations[field] = JSON::Any.new(constraints)
+      end
+
+      # The fragment `{required: [...], properties: {...}}` (omitting empties).
+      def to_schema : Hash(String, JSON::Any)
+        schema = {} of String => JSON::Any
+        schema["required"] = JSON::Any.new(@required.map { |req| JSON::Any.new(req) }) unless @required.empty?
+        schema["properties"] = JSON::Any.new(@validations) unless @validations.empty?
+        schema
+      end
+
+      def empty? : Bool
+        @required.empty? && @validations.empty?
+      end
+
+      def required_fields : Array(String)
+        @required.dup
+      end
+
+      def validations_empty? : Bool
+        @validations.empty?
+      end
+
+      private def numeric(value : Int32 | Float64) : JSON::Any
+        case value
+        in Int32   then JSON::Any.new(value.to_i64)
+        in Float64 then JSON::Any.new(value)
+        end
+      end
+    end
+
+    # The block context for `given` — splits `requires`/`validates` onto the
+    # `then` builder and routes `otherwise { |o| ... }` to the `else` builder.
+    # Faithful port of `Conditionals::ConditionalContext`.
+    class ConditionalContext
+      def initialize(@then_builder : ConditionalBuilder, @else_builder : ConditionalBuilder)
+      end
+
+      def requires(*fields : String) : Nil
+        @then_builder.requires(*fields)
+      end
+
+      def validates(field : String, type : String? = nil, const : JSON::Any? = nil,
+                    "enum" enum_values : Array(JSON::Any)? = nil, not_value : JSON::Any? = nil,
+                    min_length : Int32? = nil, max_length : Int32? = nil,
+                    pattern : String? = nil, minimum : (Int32 | Float64)? = nil,
+                    maximum : (Int32 | Float64)? = nil) : Nil
+        @then_builder.validates(field, type: type, const: const, enum: enum_values,
+          not_value: not_value, min_length: min_length, max_length: max_length,
+          pattern: pattern, minimum: minimum, maximum: maximum)
+      end
+
+      def otherwise(&block : ConditionalBuilder ->) : Nil
+        block.call(@else_builder)
       end
     end
 

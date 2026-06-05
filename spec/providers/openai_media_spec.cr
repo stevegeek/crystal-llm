@@ -1,3 +1,4 @@
+require "base64"
 require "../spec_helper"
 require "../../src/crystal_llm/provider_media"
 require "../../src/crystal_llm/providers/openai"
@@ -269,6 +270,64 @@ describe "CrystalLLM::Providers::OpenAI media" do
       payload["response_format"].as_s.should eq("verbose_json")
       payload["prompt"].as_s.should eq("context")
       payload["temperature"].as_f.should eq(0.0)
+    end
+  end
+
+  describe "#encode_speaker_references" do
+    it "encodes a list of in-memory audio refs as for_llm data URLs" do
+      alice_bytes = Bytes[0x00, 0x11, 0x22, 0x33]
+      bob_bytes = Bytes[0xAA, 0xBB, 0xCC]
+      alice = File.tempfile("alice", ".mp3", &.write(alice_bytes))
+      bob = File.tempfile("bob", ".wav", &.write(bob_bytes))
+
+      begin
+        refs = JSON::Any.new([
+          JSON::Any.new(alice.path),
+          JSON::Any.new(bob.path),
+        ])
+        encoded = configured_openai.encode_speaker_references(refs).as_a
+
+        encoded.size.should eq(2)
+        # .mp3 -> audio/mpeg, .wav -> normalized audio/wav; both audio => data URL.
+        encoded[0].as_s.should eq("data:audio/mpeg;base64,#{Base64.strict_encode(alice_bytes)}")
+        encoded[1].as_s.should eq("data:audio/wav;base64,#{Base64.strict_encode(bob_bytes)}")
+      ensure
+        File.delete(alice.path) if File.exists?(alice.path)
+        File.delete(bob.path) if File.exists?(bob.path)
+      end
+    end
+
+    it "flows through render_transcription_payload into known_speaker_references" do
+      ref = File.tempfile("spk", ".mp3", &.write(Bytes[0x01, 0x02]))
+      begin
+        part = CrystalLLM::Provider::AudioFilePart.new(
+          path: "/tmp/a.mp3", mime_type: "audio/mpeg", filename: "a.mp3"
+        )
+        opts = {
+          "speaker_references" => JSON::Any.new([JSON::Any.new(ref.path)]),
+        } of String => JSON::Any
+        payload = configured_openai.render_transcription_payload(
+          part, model: "whisper-1", language: nil, opts: opts
+        )
+        refs = payload["known_speaker_references"].as_a
+        refs.size.should eq(1)
+        refs[0].as_s.should start_with("data:audio/mpeg;base64,")
+      ensure
+        File.delete(ref.path) if File.exists?(ref.path)
+      end
+    end
+
+    it "raises a clear error when a reference is not a source string" do
+      refs = JSON::Any.new([JSON::Any.new(42_i64)])
+      expect_raises(ArgumentError, /each speaker reference must be a source string/) do
+        configured_openai.encode_speaker_references(refs)
+      end
+    end
+
+    it "raises a clear error when speaker_references is not an array" do
+      expect_raises(ArgumentError, /must be an array/) do
+        configured_openai.encode_speaker_references(JSON::Any.new("not-an-array"))
+      end
     end
   end
 

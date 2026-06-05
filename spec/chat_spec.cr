@@ -300,6 +300,133 @@ describe CrystalLLM::Chat do
     end
   end
 
+  describe "typed structured output (#with_schema(T) / #ask_as)" do
+    it "derives a JSON schema from a struct type's instance vars" do
+      chat = new_chat.with_schema(ChatSpecWeather)
+
+      envelope = chat.schema.as(JSON::Any).as_h
+      envelope["name"].as_s.should eq("ChatSpecWeather")
+      schema = envelope["schema"].as_h
+      props = schema["properties"].as_h
+      props["location"].as_h["type"].as_s.should eq("string")
+      props["temperature"].as_h["type"].as_s.should eq("integer")
+      props["raining"].as_h["type"].as_s.should eq("boolean")
+      # nilable Float64 mapped to a number and renamed via @[JSON::Field(key:)]
+      props["wind_speed"].as_h["type"].as_s.should eq("number")
+      # array of strings
+      props["alerts"].as_h["type"].as_s.should eq("array")
+      props["alerts"].as_h["items"].as_h["type"].as_s.should eq("string")
+
+      required = schema["required"].as_a.map(&.as_s)
+      # non-nilable fields are required; the nilable `wind_speed` is NOT
+      required.should contain("location")
+      required.should contain("temperature")
+      required.should contain("raining")
+      required.should contain("alerts")
+      required.should_not contain("wind_speed")
+    end
+
+    it "ask_as deserializes the assistant response into the typed struct" do
+      json = {
+        "location"    => "Berlin",
+        "temperature" => 17,
+        "raining"     => true,
+        "wind_speed"  => 4.5,
+        "alerts"      => ["wind"],
+      }.to_json
+      ChatSpecFakeProvider.scripted = [assistant(json)]
+      chat = new_chat
+
+      result = chat.ask_as("weather in Berlin?", ChatSpecWeather)
+
+      result.should be_a(ChatSpecWeather)
+      result.location.should eq("Berlin")
+      result.temperature.should eq(17)
+      result.raining.should be_true
+      result.wind.should eq(4.5)
+      result.alerts.should eq(["wind"])
+      # the schema was set on the chat as a side effect
+      chat.schema.should_not be_nil
+    end
+
+    it "ask_as tolerates an absent nilable field" do
+      json = {
+        "location"    => "Mars",
+        "temperature" => -60,
+        "raining"     => false,
+        "alerts"      => [] of String,
+      }.to_json
+      ChatSpecFakeProvider.scripted = [assistant(json)]
+      chat = new_chat
+
+      result = chat.ask_as("weather on Mars?", ChatSpecWeather)
+      result.wind.should be_nil
+      result.alerts.should be_empty
+    end
+  end
+
+  describe "legacy single-slot callbacks" do
+    it "on_new_message fires when a message is added (aliases before_message)" do
+      ChatSpecFakeProvider.scripted = [assistant("hi")]
+      seen = [] of CrystalLLM::Message
+      # silence the deprecation warning for the test
+      CrystalLLM.config.deprecation_behavior = "silence"
+      chat = new_chat.on_new_message { |msg| seen << msg }
+
+      chat.ask("hello")
+
+      # before_message fires once before the assistant response in the sync path
+      seen.size.should be >= 1
+    ensure
+      CrystalLLM.config.deprecation_behavior = "warn"
+    end
+
+    it "on_end_message fires after each new message (aliases after_message)" do
+      ChatSpecFakeProvider.scripted = [assistant("done")]
+      seen = [] of CrystalLLM::Message
+      CrystalLLM.config.deprecation_behavior = "silence"
+      chat = new_chat.on_end_message { |msg| seen << msg }
+
+      chat.ask("hi")
+
+      seen.map(&.content).should contain("done")
+    ensure
+      CrystalLLM.config.deprecation_behavior = "warn"
+    end
+
+    it "raises the deprecation when behavior is 'raise'" do
+      CrystalLLM.config.deprecation_behavior = "raise"
+      chat = new_chat
+      expect_raises(CrystalLLM::DeprecationError, "on_new_message") do
+        chat.on_new_message { |_msg| }
+      end
+    ensure
+      CrystalLLM.config.deprecation_behavior = "warn"
+    end
+
+    it "on_tool_call and on_tool_result fire around tool execution" do
+      CrystalLLM.config.deprecation_behavior = "silence"
+      args = {"word" => JSON::Any.new("crystal")} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [
+        tool_call_message("call_1", "chat_spec_echo", args),
+        assistant("done"),
+      ]
+      calls = [] of String
+      results = [] of String
+      chat = new_chat
+        .with_tool(ChatSpecEchoTool.new)
+        .on_tool_call { |tool_call| calls << tool_call.name }
+        .on_tool_result { |result| results << (result.is_a?(String) ? result : result.to_s) }
+
+      chat.ask("use the tool")
+
+      calls.should eq(["chat_spec_echo"])
+      results.should eq(["echo: crystal"])
+    ensure
+      CrystalLLM.config.deprecation_behavior = "warn"
+    end
+  end
+
   describe "#ask content building" do
     # Regression (BUG 10): when message AND attachments are both nil, ruby_llm
     # builds Content.new(nil, nil), which raises ArgumentError ("both nil"). The
@@ -355,4 +482,23 @@ end
 
 class ChatSpecPersonSchema < CrystalLLM::Schema
   string "name", description: "Full name"
+end
+
+# A JSON::Serializable struct used to exercise the typed `ask_as(T)` /
+# `with_schema(T)` hatch: a mix of String / Int / Bool / nilable / Array fields
+# plus a renamed key to verify the derived schema honors @[JSON::Field].
+struct ChatSpecWeather
+  include JSON::Serializable
+
+  getter location : String
+  getter temperature : Int32
+  getter raining : Bool
+
+  @[JSON::Field(key: "wind_speed")]
+  getter wind : Float64?
+
+  getter alerts : Array(String)
+
+  def initialize(@location, @temperature, @raining, @wind, @alerts)
+  end
 end

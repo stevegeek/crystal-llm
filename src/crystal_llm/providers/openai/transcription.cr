@@ -16,11 +16,17 @@
 #   returns only the non-file fields, and the media pipeline (`Provider#transcribe`)
 #   adds the audio `file` part to the multipart form via `Connection#post_multipart`.
 #   (Previously the file was a JSON placeholder while the multipart POST was deferred.)
-# - `encode_speaker_references` (which calls `Attachment#for_llm` on each ref) is
-#   DEFERRED with the attachment-provider surface (for_llm is part of that not-yet-
-#   ported work). A `speaker_references` opt raises a clear "deferred" error.
+# - `encode_speaker_references` maps each speaker reference to an `Attachment`
+#   and emits its `#for_llm` data URL (ruby_llm: `Attachment.new(ref).for_llm`).
+#   References arrive in the `JSON::Any` opts bag as an array of source Strings
+#   (a path or `https?://` URL — the only sources representable on the wire bag;
+#   ruby_llm also accepts IO, which has no JSON::Any representation here). Each
+#   String becomes `Attachment.new(source)`, whose `#for_llm` reads the bytes and
+#   returns `data:<mime>;base64,<...>` (or a `<file>` tag for text). A non-array
+#   value raises (ruby_llm relies on `references.map`, i.e. an Enumerable).
 require "json"
 require "../openai"
+require "../../attachment"
 require "../../provider_media"
 require "../../transcription"
 
@@ -64,15 +70,28 @@ module CrystalLLM
         payload
       end
 
-      # DEFERRED: ruby_llm encodes each reference via `Attachment.new(ref).for_llm`
-      # (the data-URL encoder), which is part of the not-yet-ported attachment-
-      # provider surface. Raise a clear deferral rather than silently dropping it.
+      # Encodes each speaker reference as an `Attachment#for_llm` value
+      # (ruby_llm: `references.map { |ref| Attachment.new(ref).for_llm }`).
+      # *references* is the `JSON::Any`-wrapped array from the opts bag; each
+      # element is a source String (path or URL). Returns a `JSON::Any` array of
+      # data-URL (or `<file>`-tag) Strings for the `known_speaker_references` field.
       def encode_speaker_references(references : JSON::Any) : JSON::Any
-        raise NotImplementedError.new(
-          "OpenAI transcription speaker_references encoding is deferred to the " \
-          "attachment-provider port (needs Attachment#for_llm). " \
-          "See providers/openai/transcription.cr."
-        )
+        refs = references.as_a? ||
+               raise ArgumentError.new(
+                 "speaker_references must be an array of attachment source strings, " \
+                 "got #{references.raw.class}"
+               )
+
+        encoded = refs.map do |ref|
+          source = ref.as_s? ||
+                   raise ArgumentError.new(
+                     "each speaker reference must be a source string (path/URL), " \
+                     "got #{ref.raw.class}"
+                   )
+          JSON::Any.new(Attachment.new(source).for_llm)
+        end
+
+        JSON::Any.new(encoded)
       end
 
       # Returns the response_format value, or nil to omit. ruby_llm: explicit

@@ -67,6 +67,62 @@ module SchemaSpecHelpers
     end
   end
 
+  # `requires:` on a property -> dependentRequired. A single `given` -> inline
+  # if/then/else. A `dependent` with `validates` -> dependentSchemas.
+  class WithConditionals < CrystalLLM::Schema
+    string "billing_type", enum: ["card", "invoice"]
+    # When `credit_card` is present, `cvv` and `expiry` must also be present.
+    string "credit_card", required: false, requires: ["cvv", "expiry"]
+    string "cvv", required: false
+    string "expiry", required: false
+    string "po_number", required: false
+
+    given({"billing_type" => JSON::Any.new("invoice")}) do |cond|
+      cond.requires "po_number"
+      cond.validates "po_number", type: "string", min_length: 3
+      cond.otherwise do |els|
+        els.requires "credit_card"
+      end
+    end
+
+    # A dependent with validations -> dependentSchemas.
+    dependent "cvv" do |dep|
+      dep.requires "credit_card"
+      dep.validates "cvv", type: "string", pattern: "^[0-9]{3}$"
+    end
+  end
+
+  # Two `given` blocks -> wrapped in `allOf`.
+  class TwoGivens < CrystalLLM::Schema
+    string "country"
+    string "state", required: false
+    string "postal_code", required: false
+
+    given({"country" => JSON::Any.new("US")}) do |cond|
+      cond.requires "state"
+    end
+
+    given({"country" => JSON::Any.new("CA")}) do |cond|
+      cond.requires "postal_code"
+    end
+  end
+
+  # An Array `given`-value is coerced into an `enum` constraint.
+  class EnumGiven < CrystalLLM::Schema
+    string "plan"
+    string "seats", required: false
+
+    given({"plan" => JSON::Any.new([JSON::Any.new("pro"), JSON::Any.new("team")])}) do |cond|
+      cond.requires "seats"
+    end
+  end
+
+  # Used to exercise the empty-`given` guard at call time (not class-body time,
+  # which would abort program init).
+  class EmptyGiven < CrystalLLM::Schema
+    string "x"
+  end
+
   # A self-referential (cyclic) $defs graph: node -> node, to exercise the
   # validator's circular-reference detection.
   class CyclicDefs < CrystalLLM::Schema
@@ -249,6 +305,67 @@ describe CrystalLLM::Schema do
     it "to_json_schema raises on a cyclic schema" do
       expect_raises(CrystalLLM::Schema::ValidationError) do
         SchemaSpecHelpers::CyclicDefs.new("x").to_json_schema
+      end
+    end
+  end
+
+  describe "conditionals (requires / given / dependent)" do
+    it "emits dependentRequired for a `requires:` property and dependentSchemas for a validating dependent" do
+      schema = SchemaSpecHelpers::WithConditionals.new("c").to_json_schema["schema"].as_h
+
+      dep_req = schema["dependentRequired"].as_h
+      dep_req["credit_card"].as_a.map(&.as_s).should eq(["cvv", "expiry"])
+      # `cvv` has validations, so it goes to dependentSchemas, not dependentRequired.
+      dep_req.has_key?("cvv").should be_false
+
+      dep_schemas = schema["dependentSchemas"].as_h
+      cvv = dep_schemas["cvv"].as_h
+      cvv["required"].as_a.map(&.as_s).should eq(["credit_card"])
+      cvv["properties"].as_h["cvv"].as_h["type"].as_s.should eq("string")
+      cvv["properties"].as_h["cvv"].as_h["pattern"].as_s.should eq("^[0-9]{3}$")
+    end
+
+    it "merges a single `given` inline as if/then/else" do
+      schema = SchemaSpecHelpers::WithConditionals.new("c").to_json_schema["schema"].as_h
+
+      # single condition => inline keys, no allOf
+      schema.has_key?("allOf").should be_false
+
+      if_schema = schema["if"].as_h
+      if_schema["properties"].as_h["billing_type"].as_h["const"].as_s.should eq("invoice")
+      if_schema["required"].as_a.map(&.as_s).should eq(["billing_type"])
+
+      then_schema = schema["then"].as_h
+      then_schema["required"].as_a.map(&.as_s).should eq(["po_number"])
+      po = then_schema["properties"].as_h["po_number"].as_h
+      po["type"].as_s.should eq("string")
+      po["minLength"].as_i.should eq(3)
+
+      else_schema = schema["else"].as_h
+      else_schema["required"].as_a.map(&.as_s).should eq(["credit_card"])
+    end
+
+    it "wraps multiple `given` blocks in allOf" do
+      schema = SchemaSpecHelpers::TwoGivens.new("g").to_json_schema["schema"].as_h
+
+      schema.has_key?("if").should be_false
+      all_of = schema["allOf"].as_a.map(&.as_h)
+      all_of.size.should eq(2)
+      all_of[0]["if"].as_h["properties"].as_h["country"].as_h["const"].as_s.should eq("US")
+      all_of[0]["then"].as_h["required"].as_a.map(&.as_s).should eq(["state"])
+      all_of[1]["if"].as_h["properties"].as_h["country"].as_h["const"].as_s.should eq("CA")
+      all_of[1]["then"].as_h["required"].as_a.map(&.as_s).should eq(["postal_code"])
+    end
+
+    it "coerces an Array given-value into an enum constraint" do
+      schema = SchemaSpecHelpers::EnumGiven.new("e").to_json_schema["schema"].as_h
+      cond = schema["if"].as_h["properties"].as_h["plan"].as_h
+      cond["enum"].as_a.map(&.as_s).should eq(["pro", "team"])
+    end
+
+    it "raises when given has no conditions" do
+      expect_raises(CrystalLLM::Schema::InvalidSchemaError, /at least one/) do
+        SchemaSpecHelpers::EmptyGiven.given({} of String => JSON::Any) { |_c| }
       end
     end
   end

@@ -206,6 +206,117 @@ module CrystalLLM
       end
     end
 
+    describe ".refresh!" do
+      # Loads the small models.dev fixture instead of hitting the network.
+      fixture = File.read(File.join(__DIR__, "fixtures", "models_dev.json"))
+
+      it "replaces the registry with models parsed from the (stubbed) fetch" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.refresh!
+
+        # A model only present in the fixture is now findable.
+        model = Models.find("gpt-test-mini", "openai")
+        model.id.should eq("gpt-test-mini")
+        model.provider.should eq("openai")
+
+        # The big embedded registry has been replaced by the small fixture set.
+        Models.all.size.should be < 10
+      ensure
+        Models.reset!
+      end
+
+      it "maps models.dev provider keys to slugs and skips unmapped providers" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.refresh!
+
+        Models.find("claude-test").provider.should eq("anthropic")
+        # google->gemini style mapping is exercised via the map; the unmapped
+        # provider's model must NOT be present.
+        expect_raises(ModelNotFoundError) { Models.find("should-be-skipped") }
+      ensure
+        Models.reset!
+      end
+
+      it "derives capabilities and pricing from models.dev fields" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.refresh!
+
+        model = Models.find("gpt-test-mini", "openai")
+        model.function_calling?.should be_true
+        model.structured_output?.should be_true
+        model.supports_vision?.should be_true
+        model.context_window.should eq(128000)
+        model.max_output_tokens.should eq(16384)
+        model.input_price_per_million.should eq(0.15)
+        model.output_price_per_million.should eq(0.6)
+      ensure
+        Models.reset!
+      end
+
+      it "normalizes embedding model modalities to output ['embeddings']" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.refresh!
+
+        embed = Models.find("text-embedding-test", "openai")
+        embed.modalities.output.should eq(["embeddings"])
+        embed.type.should eq("embedding")
+      ensure
+        Models.reset!
+      end
+
+      it "keeps the existing registry when the fetch fails" do
+        original_size = Models.all.size
+        Models.fetch_hook = -> { raise IO::Error.new("network down"); JSON.parse("{}") }
+        Models.refresh!
+
+        Models.all.size.should eq(original_size)
+      ensure
+        Models.reset!
+      end
+    end
+
+    describe "#save_to_json / round-trip" do
+      fixture = File.read(File.join(__DIR__, "fixtures", "models_dev.json"))
+
+      it "writes the registry and reads it back identically" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.refresh!
+
+        path = File.tempname("models", ".json")
+        begin
+          Models.save_to_json(path)
+
+          loaded = Models.read_from_json(path)
+          loaded.map(&.id.to_s).sort!.should eq(Models.all.map(&.id.to_s).sort!)
+
+          # A specific model survives the round-trip with its fields intact.
+          reloaded = loaded.find! { |info| info.id == "gpt-test-mini" }
+          reloaded.provider.should eq("openai")
+          reloaded.context_window.should eq(128000)
+          reloaded.input_price_per_million.should eq(0.15)
+          reloaded.function_calling?.should be_true
+        ensure
+          File.delete(path) if File.exists?(path)
+        end
+      ensure
+        Models.reset!
+      end
+
+      it "produces a non-empty JSON array on disk" do
+        path = File.tempname("models", ".json")
+        begin
+          Models.save_to_json(path)
+          content = File.read(path)
+          parsed = JSON.parse(content)
+          parsed.as_a.should_not be_empty
+        ensure
+          File.delete(path) if File.exists?(path)
+        end
+      ensure
+        Models.reset!
+      end
+    end
+
     describe "Aliases" do
       it "resolves a known alias without provider" do
         Aliases.resolve("claude-3-5-haiku").should_not eq("claude-3-5-haiku")

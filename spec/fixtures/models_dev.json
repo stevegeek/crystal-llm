@@ -1,0 +1,86 @@
+{
+  "openai": {
+    "id": "openai",
+    "name": "OpenAI",
+    "models": {
+      "gpt-test-mini": {
+        "id": "gpt-test-mini",
+        "name": "GPT Test Mini",
+        "family": "gpt-test",
+        "release_date": "2025-01-15",
+        "last_updated": "2025-02-01",
+        "knowledge": "2024-10-01",
+        "tool_call": true,
+        "structured_output": true,
+        "reasoning": false,
+        "temperature": true,
+        "attachment": true,
+        "open_weights": false,
+        "modalities": {
+          "input": ["text", "image"],
+          "output": ["text"]
+        },
+        "cost": {
+          "input": 0.15,
+          "output": 0.6,
+          "cache_read": 0.075
+        },
+        "limit": {
+          "context": 128000,
+          "output": 16384
+        }
+      },
+      "text-embedding-test": {
+        "id": "text-embedding-test",
+        "name": "Text Embedding Test",
+        "family": "embed-test",
+        "modalities": {
+          "input": ["text"],
+          "output": []
+        },
+        "cost": {
+          "input": 0.02
+        },
+        "limit": {
+          "context": 8191
+        }
+      }
+    }
+  },
+  "anthropic": {
+    "id": "anthropic",
+    "name": "Anthropic",
+    "models": {
+      "claude-test": {
+        "id": "claude-test",
+        "name": "Claude Test",
+        "family": "claude-test",
+        "last_updated": "2025-03-10",
+        "tool_call": true,
+        "reasoning": true,
+        "modalities": {
+          "input": ["text", "image", "pdf"],
+          "output": ["text"]
+        },
+        "cost": {
+          "input": 3.0,
+          "output": 15.0
+        },
+        "limit": {
+          "context": 200000,
+          "output": 8192
+        }
+      }
+    }
+  },
+  "unmapped-provider": {
+    "id": "unmapped-provider",
+    "name": "Unmapped",
+    "models": {
+      "should-be-skipped": {
+        "id": "should-be-skipped",
+        "name": "Skipped"
+      }
+    }
+  }
+}
