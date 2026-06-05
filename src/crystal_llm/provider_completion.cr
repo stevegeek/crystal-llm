@@ -13,10 +13,11 @@
 #   returning `Message`, and a streaming overload taking `&block : Chunk ->`. The
 #   streaming overload passes `stream: true` to `render_payload`; the sync one
 #   passes `stream: false`.
-# - `tool_prefs:` (tool_choice / parallel_tool_calls preferences) is DEFERRED: it
-#   is part of the Chat/Agent surface not yet ported. `render_payload` therefore
-#   omits the `tool_prefs` keyword for now (documented at the hook below + in the
-#   return). Add it when the chat/agent layer lands.
+# - `tool_prefs:` (tool_choice / parallel_tool_calls preferences) IS threaded:
+#   `complete` accepts `tool_prefs : Hash(String, String?)?` (Chat's `@tool_prefs`
+#   shape — `{"choice" => ..., "calls" => ...}`) and forwards it to `render_payload`.
+#   Each provider emits the wire-specific tool_choice/parallel control. `nil` (the
+#   default) means "no preference" and providers omit the fields entirely.
 # - `maybe_normalize_temperature` is a provider hook (OpenAI overrides it); the base
 #   returns the temperature unchanged, matching ruby_llm.
 # - `sync_response`/`stream_response` take no explicit `connection` argument (ruby_llm
@@ -41,7 +42,8 @@ module CrystalLLM
                  params : Hash(String, JSON::Any) = {} of String => JSON::Any,
                  headers : Hash(String, String) = {} of String => String,
                  schema : JSON::Any? = nil,
-                 thinking : Thinking::Config? = nil) : Message
+                 thinking : Thinking::Config? = nil,
+                 tool_prefs : Hash(String, String?)? = nil) : Message
       normalized_temperature = maybe_normalize_temperature(temperature, model)
 
       payload = Utils.deep_merge(
@@ -52,7 +54,8 @@ module CrystalLLM
           model: model,
           stream: false,
           schema: schema,
-          thinking: thinking
+          thinking: thinking,
+          tool_prefs: tool_prefs
         ),
         params
       )
@@ -70,6 +73,7 @@ module CrystalLLM
                  headers : Hash(String, String) = {} of String => String,
                  schema : JSON::Any? = nil,
                  thinking : Thinking::Config? = nil,
+                 tool_prefs : Hash(String, String?)? = nil,
                  &block : Chunk ->) : Message
       normalized_temperature = maybe_normalize_temperature(temperature, model)
 
@@ -81,7 +85,8 @@ module CrystalLLM
           model: model,
           stream: true,
           schema: schema,
-          thinking: thinking
+          thinking: thinking,
+          tool_prefs: tool_prefs
         ),
         params
       )
@@ -124,11 +129,13 @@ module CrystalLLM
     end
 
     # Builds the provider request body. `stream` toggles streaming-specific fields.
-    # NOTE (divergence): `tool_prefs:` is deferred (see file header); not a param yet.
+    # `tool_prefs` is Chat's tool-choice state (`{"choice" => ..., "calls" => ...}`)
+    # or `nil` for "no preference"; each provider emits its wire-specific tool_choice.
     def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                        temperature : Float64?, model : Model::Info,
                        stream : Bool = false, schema : JSON::Any? = nil,
-                       thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                       thinking : Thinking::Config? = nil,
+                       tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
       raise "render_payload must be implemented by #{self.class.provider_name}"
     end
 

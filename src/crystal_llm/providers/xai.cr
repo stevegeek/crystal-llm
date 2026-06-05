@@ -20,10 +20,9 @@
 #     xAI inherits none of those here (they are deferred on the OpenAI base too).
 #   - Attachment media formatting: ruby_llm's XAI::Chat#format_content restricts
 #     attachments to images only (document_attachments: :none, image: true,
-#     audio: false). Rich attachment formatting is deferred on the OpenAI base
-#     (see providers/openai/media.cr — Content with attachments raises a clear
-#     "deferred" error). The xAI image-only restriction is therefore moot until the
-#     attachment-provider port lands; recorded here so it reads as a decision.
+#     audio: false). This is now ported via the `format_content` override below
+#     (vision parity): image attachments format normally; document/pdf and audio
+#     attachments raise UnsupportedAttachmentError.
 #   - Hard auth (real network calls) is out of scope; this is unit-tested in isolation.
 #
 # DIVERGENCES:
@@ -68,6 +67,18 @@ module CrystalLLM
       # "developer"). ruby_llm: XAI::Chat#format_role(role) => role.to_s.
       def format_role(role : Role) : String
         role.to_s.downcase
+      end
+
+      # xAI accepts image attachments but not documents or audio.
+      # ruby_llm: XAI::Chat#format_content(content,
+      #   document_attachments: :none, image_attachments: true, audio_attachments: false).
+      def format_content(content : String | Content | Content::Raw | Nil) : JSON::Any
+        Media.format_content(
+          content,
+          document_attachments: "none",
+          image_attachments: true,
+          audio_attachments: false
+        )
       end
 
       def self.configuration_requirements : Array(String)

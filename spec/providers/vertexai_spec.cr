@@ -184,9 +184,9 @@ describe CrystalLLM::Providers::VertexAI do
       contents[1].as_h["role"].as_s.should eq("model")
     end
 
-    it "adds responseMimeType when a schema envelope is present (schema conversion deferred)" do
+    it "rewrites a schema into Gemini responseSchema (shared rewriter) for a < 2.5 model" do
       provider = configured_vertexai
-      schema = JSON.parse(%({"name":"person","schema":{"type":"object"},"strict":true}))
+      schema = JSON.parse(%({"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"}}},"strict":true}))
       payload = provider.render_payload(
         [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
         tools: {} of String => CrystalLLM::Tool,
@@ -194,7 +194,29 @@ describe CrystalLLM::Providers::VertexAI do
         model: gemini_model,
         schema: schema
       )
-      payload["generationConfig"].as_h["responseMimeType"].as_s.should eq("application/json")
+      gen = payload["generationConfig"].as_h
+      gen["responseMimeType"].as_s.should eq("application/json")
+      gen.has_key?("responseJsonSchema").should be_false
+      rs = gen["responseSchema"].as_h
+      rs["type"].as_s.should eq("OBJECT")
+      rs["properties"].as_h["name"].as_h["type"].as_s.should eq("STRING")
+    end
+
+    it "uses responseJsonSchema for a >= 2.5 model (shared version gate)" do
+      provider = configured_vertexai
+      schema = JSON.parse(%({"schema":{"type":"object","strict":true,"properties":{"a":{"type":"string"}}}}))
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: CrystalLLM::Model::Info.build(id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", provider: "vertexai"),
+        schema: schema
+      )
+      gen = payload["generationConfig"].as_h
+      gen.has_key?("responseSchema").should be_false
+      rjs = gen["responseJsonSchema"].as_h
+      rjs["type"].as_s.should eq("object")
+      rjs.has_key?("strict").should be_false
     end
 
     it "serializes tools into functionDeclarations" do
@@ -224,6 +246,33 @@ describe CrystalLLM::Providers::VertexAI do
       params["type"].as_s.should eq("OBJECT")
       params["properties"].as_h["q"].as_h["type"].as_s.should eq("STRING")
       params["required"].as_a.map(&.as_s).should eq(["q"])
+    end
+
+    it "emits toolConfig.functionCallingConfig from tool_prefs (named tool → any)" do
+      provider = configured_vertexai
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: gemini_model,
+        tool_prefs: {"choice" => "search", "calls" => "one"} of String => String?
+      )
+      fcc = payload["toolConfig"].as_h["functionCallingConfig"].as_h
+      fcc["mode"].as_s.should eq("any")
+      fcc["allowedFunctionNames"].as_a.map(&.as_s).should eq(["search"])
+    end
+
+    it "omits toolConfig when tool_prefs is nil" do
+      provider = configured_vertexai
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: gemini_model
+      )
+      payload.has_key?("toolConfig").should be_false
     end
 
     # Bug 9 regression: VertexAI previously omitted Gemini's anyOf (nullable)

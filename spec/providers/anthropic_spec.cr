@@ -155,6 +155,52 @@ describe CrystalLLM::Providers::Anthropic do
       inner.has_key?("strict").should be_false
     end
 
+    it "emits a {type:tool,name} tool_choice with disable_parallel from tool_prefs" do
+      provider = configured_anthropic
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        tool_prefs: {"choice" => "search", "calls" => "one"} of String => String?
+      )
+      tc = payload["tool_choice"].as_h
+      tc["type"].as_s.should eq("tool")
+      tc["name"].as_s.should eq("search")
+      tc["disable_parallel_tool_use"].as_bool.should be_true
+    end
+
+    it "maps required→any and calls=many→disable_parallel false" do
+      provider = configured_anthropic
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        tool_prefs: {"choice" => "required", "calls" => "many"} of String => String?
+      )
+      tc = payload["tool_choice"].as_h
+      tc["type"].as_s.should eq("any")
+      tc["disable_parallel_tool_use"].as_bool.should be_false
+    end
+
+    it "omits tool_choice when tool_prefs is nil" do
+      provider = configured_anthropic
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: claude_model,
+        stream: false
+      )
+      payload.has_key?("tool_choice").should be_false
+    end
+
     it "renders tools with the flat input_schema shape" do
       provider = configured_anthropic
       tool = CrystalLLM::DynamicTool.new(

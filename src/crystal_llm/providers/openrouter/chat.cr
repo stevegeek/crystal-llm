@@ -31,7 +31,9 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
+        prefs = tool_prefs || {} of String => String?
         payload = {
           "model"    => JSON::Any.new(model.id),
           "messages" => JSON::Any.new(format_messages(messages)),
@@ -42,6 +44,12 @@ module CrystalLLM
 
         unless tools.empty?
           payload["tools"] = JSON::Any.new(tools.map { |_, tool| tool_for(tool) })
+          if choice = prefs["choice"]?
+            payload["tool_choice"] = build_tool_choice(choice)
+          end
+          unless (calls = prefs["calls"]?).nil?
+            payload["parallel_tool_calls"] = JSON::Any.new(calls == "many")
+          end
         end
 
         if schema && (schema_hash = schema.as_h?)

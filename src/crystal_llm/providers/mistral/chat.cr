@@ -115,7 +115,8 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
         payload = super
         payload.delete("stream_options")
         configure_thinking_payload(payload, model, thinking)

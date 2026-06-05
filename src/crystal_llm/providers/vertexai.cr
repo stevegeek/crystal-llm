@@ -14,10 +14,10 @@
 # - rich attachment media formatting (inline_data / fileData parts) — media.cr ports
 #   only the text/Raw/Hash content paths chat needs; a Content with attachments raises
 #   a clear "deferred" error (mirrors the OpenAI media port).
-# - structured-output schema conversion (GeminiSchema / responseSchema / thinkingConfig)
-#   is NOT ported (chat-only; render_payload accepts `schema`/`thinking` to match the
-#   frozen hook signature but only wires the plain responseMimeType envelope when a
-#   schema is present — see chat.cr).
+# - structured-output schema conversion is PORTED and shared with the native Gemini
+#   provider (Providers::GeminiSchema in gemini/schema.cr): render_payload delegates to
+#   it (responseMimeType + responseJsonSchema/responseSchema version gate). `thinking`
+#   (thinkingConfig) wiring on the Vertex side remains DEFERRED.
 #
 # AUTH: ruby_llm authenticates via the googleauth gem (Application Default Credentials /
 # service-account key -> OAuth2 bearer token, SCOPES). The *service-account-key* path is
@@ -99,6 +99,9 @@ module CrystalLLM
   end
 end
 
+# Shared with the native Gemini provider: the recursive structured-output schema
+# rewriter + responseJsonSchema-vs-responseSchema version gate (Providers::GeminiSchema).
+require "./gemini/schema"
 require "./vertexai/auth"
 require "./vertexai/media"
 require "./vertexai/tools"

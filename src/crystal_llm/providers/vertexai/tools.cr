@@ -91,6 +91,30 @@ module CrystalLLM
         } of String => JSON::Any)]
       end
 
+      # toolConfig.functionCallingConfig wire value (Gemini shape, inherited by
+      # Vertex in ruby_llm). `tool_choice` is "auto"/"none"/"required" or a named-tool
+      # string; "required" or a specific name map to mode "any" (the latter adding
+      # allowedFunctionNames). Emitted by render_payload from `tool_prefs["choice"]`.
+      def build_tool_config(tool_choice : String) : JSON::Any
+        config = {} of String => JSON::Any
+        config["mode"] = JSON::Any.new(forced_tool_choice?(tool_choice) ? "any" : tool_choice)
+        if specific_tool_choice?(tool_choice)
+          config["allowedFunctionNames"] = JSON::Any.new([JSON::Any.new(tool_choice)])
+        end
+
+        JSON::Any.new({
+          "functionCallingConfig" => JSON::Any.new(config),
+        } of String => JSON::Any)
+      end
+
+      private def forced_tool_choice?(tool_choice : String) : Bool
+        tool_choice == "required" || specific_tool_choice?(tool_choice)
+      end
+
+      private def specific_tool_choice?(tool_choice : String) : Bool
+        !%w[auto none required].includes?(tool_choice)
+      end
+
       # Pulls `functionCall` parts out of a completion/stream response into ToolCalls.
       def extract_tool_calls(data : JSON::Any) : Hash(String, ToolCall)?
         parts = data.dig?("candidates", 0, "content", "parts").try(&.as_a?)

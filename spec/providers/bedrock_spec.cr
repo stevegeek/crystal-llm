@@ -2,6 +2,53 @@ require "../spec_helper"
 require "../../src/crystal_llm/provider_completion"
 require "../../src/crystal_llm/providers/bedrock"
 require "../support/stub_connection"
+require "base64"
+require "digest/crc32"
+
+# Builds one AWS `application/vnd.amazon.eventstream` binary frame around *payload*
+# (already-serialized JSON bytes), with valid prelude + message CRC32s and a single
+# minimal `:event-type` / `:message-type` header pair (headers are not parsed by the
+# decoder, but a realistic non-empty header section exercises the offset math).
+# When *corrupt_crc* is true the trailing message CRC is flipped so the decoder's
+# integrity check can be asserted.
+private def build_eventstream_frame(payload : String, corrupt_crc : Bool = false) : Bytes
+  # One header: name=":event-type" (string value "contentBlockDelta").
+  headers = IO::Memory.new
+  name = ":event-type"
+  value = "contentBlockDelta"
+  headers.write_byte(name.bytesize.to_u8)
+  headers.write(name.to_slice)
+  headers.write_byte(7_u8) # header value type 7 = string
+  headers.write_bytes(value.bytesize.to_u16, IO::ByteFormat::BigEndian)
+  headers.write(value.to_slice)
+  headers_bytes = headers.to_slice
+
+  payload_bytes = payload.to_slice
+  total_len = 16_u32 + headers_bytes.size + payload_bytes.size
+
+  prelude = IO::Memory.new
+  prelude.write_bytes(total_len, IO::ByteFormat::BigEndian)
+  prelude.write_bytes(headers_bytes.size.to_u32, IO::ByteFormat::BigEndian)
+  prelude_first8 = prelude.to_slice
+  prelude.write_bytes(Digest::CRC32.checksum(prelude_first8), IO::ByteFormat::BigEndian)
+  prelude_bytes = prelude.to_slice
+
+  frame = IO::Memory.new
+  frame.write(prelude_bytes)
+  frame.write(headers_bytes)
+  frame.write(payload_bytes)
+  message_crc = Digest::CRC32.checksum(frame.to_slice)
+  message_crc = message_crc ^ 0xFFFFFFFF_u32 if corrupt_crc
+  frame.write_bytes(message_crc, IO::ByteFormat::BigEndian)
+  frame.to_slice
+end
+
+# A frame whose inner payload is the model SSE-style event JSON wrapped in the
+# base64 `{"bytes": ...}` envelope Bedrock uses.
+private def build_bytes_frame(event_json : String, corrupt_crc : Bool = false) : Bytes
+  outer = {"bytes" => Base64.strict_encode(event_json)}.to_json
+  build_eventstream_frame(outer, corrupt_crc)
+end
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
@@ -239,6 +286,39 @@ describe CrystalLLM::Providers::Bedrock do
       payload["tools"].as_a.size.should eq(1)
     end
 
+    it "emits toolConfig.toolChoice from tool_prefs (named tool)" do
+      provider = configured_bedrock
+      tool = CrystalLLM::DynamicTool.new("get_weather", "weather", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"get_weather" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        tool_prefs: {"choice" => "get_weather", "calls" => nil} of String => String?
+      )
+      tc = payload["toolConfig"].as_h["toolChoice"].as_h
+      tc["tool"].as_h["name"].as_s.should eq("get_weather")
+    end
+
+    it "maps required→{any:{}} and omits toolChoice when no choice" do
+      provider = configured_bedrock
+      tool = CrystalLLM::DynamicTool.new("get_weather", "weather", {} of String => JSON::Any) { |_| "" }
+      tools = {"get_weather" => tool.as(CrystalLLM::Tool)}
+      required = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: tools, temperature: nil, model: claude_model, stream: false,
+        tool_prefs: {"choice" => "required", "calls" => nil} of String => String?
+      )
+      required["toolConfig"].as_h["toolChoice"].as_h.has_key?("any").should be_true
+
+      none = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: tools, temperature: nil, model: claude_model, stream: false
+      )
+      none["toolConfig"].as_h.has_key?("toolChoice").should be_false
+    end
+
     it "builds an outputConfig from a schema envelope" do
       provider = configured_bedrock
       schema = JSON.parse(%({"name":"person","schema":{"type":"object","strict":true}}))
@@ -471,6 +551,92 @@ describe CrystalLLM::Providers::Bedrock do
 
       plain = CrystalLLM::Model::Info.build(id: "y", provider: "bedrock")
       CrystalLLM::Providers::Bedrock::Capabilities.reasoning_embedded?(plain).should be_false
+    end
+  end
+
+  describe "binary eventstream decode" do
+    it "extracts the inner base64 `bytes` JSON event from a single frame" do
+      event_json = %({"contentBlockDelta": {"delta": {"text": "Hel"}}})
+      io = IO::Memory.new(build_bytes_frame(event_json))
+
+      events = [] of JSON::Any
+      configured_bedrock.decode_event_stream(io) { |event| events << event }
+
+      events.size.should eq(1)
+      events[0].dig("contentBlockDelta", "delta", "text").as_s.should eq("Hel")
+    end
+
+    it "decodes the frame and builds a Chunk end-to-end" do
+      provider = configured_bedrock
+      event_json = %({"modelId": "anthropic.claude-3-sonnet-20240229-v1:0", "contentBlockDelta": {"delta": {"text": "Hi"}}})
+      io = IO::Memory.new(build_bytes_frame(event_json))
+
+      chunks = [] of CrystalLLM::Chunk
+      provider.decode_event_stream(io) do |event|
+        chunks << provider.build_chunk(event)
+      end
+
+      chunks.size.should eq(1)
+      chunks[0].content.should eq("Hi")
+      chunks[0].model_id.should eq("anthropic.claude-3-sonnet-20240229-v1:0")
+    end
+
+    it "decodes multiple back-to-back frames off one stream" do
+      io = IO::Memory.new
+      io.write(build_bytes_frame(%({"contentBlockDelta": {"delta": {"text": "foo"}}})))
+      io.write(build_bytes_frame(%({"contentBlockDelta": {"delta": {"text": "bar"}}})))
+      io.write(build_bytes_frame(%({"metadata": {"usage": {"inputTokens": 5, "outputTokens": 7}}})))
+      io.rewind
+
+      provider = configured_bedrock
+      accumulator = CrystalLLM::StreamAccumulator.new
+      provider.decode_event_stream(io) { |event| accumulator.add(provider.build_chunk(event)) }
+
+      message = accumulator.to_message(nil)
+      message.content.should eq("foobar")
+      message.input_tokens.should eq(5)
+      message.output_tokens.should eq(7)
+    end
+
+    it "handles a frame whose outer payload IS the event (no `bytes` envelope)" do
+      io = IO::Memory.new(build_eventstream_frame(%({"contentBlockDelta": {"delta": {"text": "raw"}}})))
+
+      events = [] of JSON::Any
+      configured_bedrock.decode_event_stream(io) { |event| events << event }
+
+      events.size.should eq(1)
+      events[0].dig("contentBlockDelta", "delta", "text").as_s.should eq("raw")
+    end
+
+    it "raises EventStreamError on a corrupt message CRC" do
+      io = IO::Memory.new(build_bytes_frame(%({"contentBlockDelta": {"delta": {"text": "x"}}}), corrupt_crc: true))
+
+      expect_raises(CrystalLLM::Providers::Bedrock::EventStreamError, /CRC/) do
+        configured_bedrock.decode_event_stream(io) { |_| }
+      end
+    end
+
+    it "raises EventStreamError on a truncated frame" do
+      full = build_bytes_frame(%({"contentBlockDelta": {"delta": {"text": "x"}}}))
+      io = IO::Memory.new(full[0, full.size - 8]) # drop payload tail + CRC
+
+      expect_raises(CrystalLLM::Providers::Bedrock::EventStreamError, /Truncated/) do
+        configured_bedrock.decode_event_stream(io) { |_| }
+      end
+    end
+
+    it "yields nothing for an empty stream (clean EOF)" do
+      io = IO::Memory.new(Bytes.new(0))
+      count = 0
+      configured_bedrock.decode_event_stream(io) { |_| count += 1 }
+      count.should eq(0)
+    end
+
+    it "drops frames whose payload is not valid JSON" do
+      io = IO::Memory.new(build_eventstream_frame("not json at all"))
+      count = 0
+      configured_bedrock.decode_event_stream(io) { |_| count += 1 }
+      count.should eq(0)
     end
   end
 end

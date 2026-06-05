@@ -112,6 +112,52 @@ describe CrystalLLM::Providers::OpenAI do
       rf["type"].as_s.should eq("json_schema")
       rf["json_schema"].as_h["name"].as_s.should eq("person")
     end
+
+    it "emits a named-function tool_choice and parallel flag from tool_prefs" do
+      provider = configured_openai
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: gpt4o_model,
+        stream: false,
+        tool_prefs: {"choice" => "search", "calls" => "one"} of String => String?
+      )
+      tc = payload["tool_choice"].as_h
+      tc["type"].as_s.should eq("function")
+      tc["function"].as_h["name"].as_s.should eq("search")
+      payload["parallel_tool_calls"].as_bool.should be_false
+    end
+
+    it "emits a string tool_choice for required and parallel=true for many" do
+      provider = configured_openai
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: gpt4o_model,
+        stream: false,
+        tool_prefs: {"choice" => "required", "calls" => "many"} of String => String?
+      )
+      payload["tool_choice"].as_s.should eq("required")
+      payload["parallel_tool_calls"].as_bool.should be_true
+    end
+
+    it "omits tool_choice/parallel when tool_prefs is nil" do
+      provider = configured_openai
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: gpt4o_model,
+        stream: false
+      )
+      payload.has_key?("tool_choice").should be_false
+      payload.has_key?("parallel_tool_calls").should be_false
+    end
   end
 
   describe "#parse_completion_response" do

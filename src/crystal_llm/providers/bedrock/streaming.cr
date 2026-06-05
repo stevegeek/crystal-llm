@@ -1,20 +1,21 @@
 # ported from lib/ruby_llm/providers/bedrock/streaming.rb @ ruby_llm 1.15.0
 #
-# Builds a Chunk from one decoded Bedrock ConverseStream event (a JSON::Any).
+# Decodes Bedrock ConverseStream's binary `application/vnd.amazon.eventstream`
+# frames into JSON::Any events and builds a Chunk per event.
 #
 # Divergences / DEFERRALS:
-# - AWS Event Stream binary framing: ruby_llm decodes Bedrock's binary
-#   `application/vnd.amazon.eventstream` frames with the `aws-eventstream` gem
-#   (decode_chunk + Base64 inner payloads). The Crystal port has no in-tree
-#   event-stream decoder yet, so the binary frame -> JSON::Any decoding is DEFERRED
-#   (tracked with the Connection/streaming wiring). `build_chunk` below is the exact
-#   event -> Chunk mapping and operates on the already-decoded event JSON, matching
-#   the frozen `build_chunk(data : JSON::Any) : Chunk` signature. The base Streaming
-#   mixin's SSE loop is OpenAI-shaped; a Bedrock-specific frame loop is future work.
+# - AWS Event Stream binary framing: ruby_llm decodes Bedrock's binary frames with
+#   the `aws-eventstream` gem (Decoder#decode_chunk + Base64 inner payloads). The
+#   Crystal port hand-rolls the frame format in `decode_event_stream` /
+#   `decode_event_frame` (4-byte total len, 4-byte headers len, 4-byte prelude CRC,
+#   headers, payload, 4-byte message CRC — all big-endian) using
+#   IO::ByteFormat::BigEndian + Digest::CRC32, then peels the outer
+#   `{"bytes": base64}` wrapper in `decode_event_payload`. `stream_response` is
+#   overridden to drive that decoder instead of the base SSE mixin (which is
+#   OpenAI/SSE-shaped and cannot parse binary frames).
 # - Streaming error events (throttlingException etc.) -> raised errors: the
-#   status-mapping is ported in `stream_error_status`; raising is left to the future
-#   Bedrock stream loop (the base mixin doesn't surface it). `stream_error_event?` and
-#   `stream_error_status` are ported for that wiring.
+#   status-mapping is ported in `stream_error_status` and now raised from
+#   `stream_response` via ErrorMiddleware (`stream_error_event?` gates it).
 # - ToolCall ids/names are non-nil in CrystalLLM; ruby_llm's `nil`-keyed partial
 #   tool-call deltas become `""`-keyed here (the accumulator merges by buffer
 #   position — same convention as the OpenAI streaming port). The toolUse input
@@ -22,13 +23,130 @@
 # - thinking text/signature are extracted but not attached to the Chunk (Message#thinking
 #   deferred); reasoning_tokens ARE wired.
 require "json"
+require "base64"
+require "digest/crc32"
 require "../bedrock"
 
 module CrystalLLM
   module Providers
     class Bedrock < Provider
+      # Raised when an eventstream frame fails its CRC32 integrity check or is
+      # otherwise malformed (truncated prelude/length fields).
+      class EventStreamError < CrystalLLM::Error
+      end
+
+      # Size of the message prelude: total-length (4) + headers-length (4) +
+      # prelude-CRC (4). Plus the trailing 4-byte message CRC = 16 framing bytes.
+      PRELUDE_BYTES = 12
+      FRAMING_BYTES = 16
+
       def stream_url : String
         "/model/#{@current_model.try(&.id)}/converse-stream"
+      end
+
+      # Bedrock streaming override: the response body is a sequence of binary
+      # `application/vnd.amazon.eventstream` frames (not SSE), so the base
+      # `Streaming#stream_response` SSE loop cannot be used. Reads frames off
+      # `body_io`, decodes each inner JSON event, raises mapped errors for
+      # exception/error events, and feeds the rest to `build_chunk`.
+      def stream_response(payload : String, headers : Hash(String, String) = {} of String => String,
+                          &block : Chunk ->) : Message
+        accumulator = StreamAccumulator.new
+        url = stream_url
+        signed = sign_headers("POST", url, payload).merge(headers)
+        # Bedrock requires this Accept to receive eventstream framing.
+        signed = signed.merge({"Accept" => "application/vnd.amazon.eventstream"})
+
+        connection.post_stream(url, payload, signed) do |response|
+          decode_event_stream(response.body_io) do |event|
+            if stream_error_event?(event)
+              if mapped = stream_error_status(event)
+                status, message = mapped
+                ErrorMiddleware.parse_error(status, message, nil)
+              end
+            end
+
+            chunk = build_chunk(event)
+            accumulator.add(chunk)
+            block.call(chunk)
+          end
+        end
+
+        accumulator.to_message(nil)
+      end
+
+      # Reads AWS event-stream frames off *io* and yields each decoded model event
+      # (a JSON::Any). Frames whose payload carries no decodable JSON are skipped
+      # (ruby_llm: decode_event_payload returns nil and is dropped).
+      def decode_event_stream(io : IO, & : JSON::Any ->) : Nil
+        while payload = read_event_frame(io)
+          event = decode_event_payload(payload)
+          yield event if event
+        end
+      end
+
+      # Reads ONE full frame off *io* and returns its raw payload bytes, or nil at
+      # clean EOF. Validates the prelude + message CRC32s (ruby_llm relies on the
+      # aws-eventstream gem to do this; we do it inline).
+      private def read_event_frame(io : IO) : Bytes?
+        prelude = Bytes.new(PRELUDE_BYTES)
+        read = read_fully(io, prelude)
+        return nil if read.zero? # clean EOF between frames
+        raise EventStreamError.new("Truncated eventstream prelude") if read < PRELUDE_BYTES
+
+        total_len = IO::ByteFormat::BigEndian.decode(UInt32, prelude[0, 4])
+        headers_len = IO::ByteFormat::BigEndian.decode(UInt32, prelude[4, 4])
+        prelude_crc = IO::ByteFormat::BigEndian.decode(UInt32, prelude[8, 4])
+
+        if Digest::CRC32.checksum(prelude[0, 8]) != prelude_crc
+          raise EventStreamError.new("Eventstream prelude CRC mismatch")
+        end
+
+        if total_len < FRAMING_BYTES + headers_len
+          raise EventStreamError.new("Eventstream frame length out of range")
+        end
+
+        # Remainder = everything after the prelude: headers + payload + message CRC.
+        remainder = Bytes.new(total_len - PRELUDE_BYTES)
+        raise EventStreamError.new("Truncated eventstream frame") if read_fully(io, remainder) < remainder.size
+
+        message_crc = IO::ByteFormat::BigEndian.decode(UInt32, remainder[remainder.size - 4, 4])
+        # Message CRC covers the whole frame except the trailing CRC itself.
+        crc = Digest::CRC32.update(prelude, 0_u32)
+        crc = Digest::CRC32.update(remainder[0, remainder.size - 4], crc)
+        raise EventStreamError.new("Eventstream message CRC mismatch") if crc != message_crc
+
+        payload_len = remainder.size - headers_len - 4
+        # Headers themselves are not needed to extract the model event JSON.
+        remainder[headers_len, payload_len]
+      end
+
+      # Reads up to buf.size bytes, returning the count actually read. Wraps
+      # IO#read_fully?'s partial-read handling so callers can distinguish clean EOF
+      # (0) from a truncated frame (< buf.size).
+      private def read_fully(io : IO, buf : Bytes) : Int32
+        total = 0
+        while total < buf.size
+          n = io.read(buf[total, buf.size - total])
+          break if n.zero?
+          total += n
+        end
+        total
+      end
+
+      # Decodes one frame payload (raw JSON bytes) into the model event JSON.
+      # ruby_llm: parse the outer JSON; if it carries a base64 `"bytes"` string,
+      # base64-decode + re-parse that (the actual model SSE-style event); otherwise
+      # the outer JSON *is* the event. Returns nil on unparseable payloads (dropped).
+      def decode_event_payload(payload : Bytes) : JSON::Any?
+        outer = JSON.parse(String.new(payload))
+        if bytes = outer["bytes"]?.try(&.as_s?)
+          JSON.parse(String.new(Base64.decode(bytes)))
+        else
+          outer
+        end
+      rescue JSON::ParseException | Base64::Error
+        nil
       end
 
       def build_chunk(data : JSON::Any) : Chunk

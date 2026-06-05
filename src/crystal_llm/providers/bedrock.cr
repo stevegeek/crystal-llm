@@ -94,6 +94,7 @@ module CrystalLLM
 end
 
 require "./bedrock/auth"
+require "./bedrock/media"
 require "./bedrock/chat"
 require "./bedrock/streaming"
 require "./bedrock/models"

@@ -23,11 +23,11 @@
 # - `build_response_content` (inline/file attachment reconstruction on the parse
 #   side) is DEFERRED with the same attachment surface; parse_completion_response
 #   collapses parts to joined text only.
-# - Structured-output schema translation (GeminiSchema / convert_schema_to_gemini /
-#   responseJsonSchema-vs-responseSchema version gate) is DEFERRED: it is a large
-#   recursive JSON-schema rewriter and the chat-path tests don't exercise it. The
-#   `schema:` hook is wired through render_payload to set responseMimeType +
-#   responseSchema via a thin passthrough, with a documented divergence.
+# PORTED (2026-06-05): Structured-output schema translation. The recursive
+# GeminiSchema rewriter (uppercase TYPE values, propertyOrdering, nullable, anyOf
+# collapse, $ref/$defs resolution-or-strip) plus the responseJsonSchema-vs-
+# responseSchema version gate now live in gemini/schema.cr (Providers::GeminiSchema),
+# SHARED with VertexAI. render_payload's `structured_output_config` delegates to it.
 #
 # Other divergences (see also the sub-files):
 # - Crystal's `Message`/`Chunk` carry NO `thinking:` field yet (Message#thinking is
@@ -97,6 +97,7 @@ module CrystalLLM
   end
 end
 
+require "./gemini/schema"
 require "./gemini/media"
 require "./gemini/tools"
 require "./gemini/chat"

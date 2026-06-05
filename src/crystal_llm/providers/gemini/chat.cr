@@ -5,15 +5,15 @@
 # nothing like the OpenAI chat-completions shape.
 #
 # Divergences:
-# - `render_payload` matches the completion pipeline's hook signature (no
-#   `tool_prefs`; deferred — see provider_completion.cr). It returns
-#   `Hash(String, JSON::Any)` and sets `@model_id` (ruby_llm's `@model` ivar) for
-#   completion_url/stream_url.
-# - Structured-output schema translation (GeminiSchema, responseJsonSchema-vs-
-#   responseSchema version gate) is DEFERRED (see gemini.cr header). The `schema:`
-#   hook is honored with a thin passthrough: it sets `responseMimeType:
-#   "application/json"` and `responseSchema` = the inner schema as-given (no
-#   recursive uppercase-type rewrite). Documented divergence.
+# - `render_payload` matches the completion pipeline's hook signature, including
+#   `tool_prefs`. When tools are present and `choice` is set, it emits
+#   `toolConfig.functionCallingConfig` via `build_tool_config(choice)` (mode
+#   AUTO/NONE/ANY + allowedFunctionNames). Gemini has no parallel-call control, so
+#   `calls` is ignored (ruby_llm parity). It returns `Hash(String, JSON::Any)` and
+#   sets `@model_id` (ruby_llm's `@model` ivar) for completion_url/stream_url.
+# - Structured-output schema translation is PORTED: `structured_output_config`
+#   delegates to the shared GeminiSchema rewriter + responseJsonSchema-vs-
+#   responseSchema version gate in gemini/schema.cr (see that file).
 # - `thinking`: build_thinking_config (includeThoughts / thinkingLevel /
 #   thinkingBudget) is ported. Thinking *text/signature* extraction into the
 #   Message IS wired (thought parts + thoughtSignature -> `Thinking.build`);
@@ -35,14 +35,16 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
         @model_id = model.id
+        prefs = tool_prefs || {} of String => String?
 
         generation_config = {} of String => JSON::Any
         generation_config["temperature"] = JSON::Any.new(temperature) unless temperature.nil?
 
         if schema
-          structured_output_config(schema).each { |k, v| generation_config[k] = v }
+          structured_output_config(schema, model).each { |k, v| generation_config[k] = v }
         end
 
         if thinking && thinking.enabled?
@@ -56,6 +58,10 @@ module CrystalLLM
 
         unless tools.empty?
           payload["tools"] = JSON::Any.new(format_tools(tools))
+          # Gemini doesn't support controlling parallel tool calls (`calls` ignored).
+          if choice = prefs["choice"]?
+            payload["toolConfig"] = build_tool_config(choice)
+          end
         end
 
         payload
@@ -73,15 +79,12 @@ module CrystalLLM
         JSON::Any.new(config)
       end
 
-      # DEFERRED thin passthrough: responseMimeType + responseSchema = inner schema
-      # as-given (no GeminiSchema recursive uppercase-type rewrite — see header).
-      def structured_output_config(schema : JSON::Any) : Hash(String, JSON::Any)
-        config = {"responseMimeType" => JSON::Any.new("application/json")} of String => JSON::Any
-        inner = schema.dig?("schema") || schema
-        if inner_hash = inner.as_h?
-          config["responseSchema"] = JSON::Any.new(inner_hash)
-        end
-        config
+      # ruby_llm's structured_output_config: responseMimeType: application/json plus
+      # either responseJsonSchema (Gemini >= 2.5, cleaned raw schema) or responseSchema
+      # (older, GeminiSchema-rewritten). Delegates to the shared rewriter + version gate
+      # in gemini/schema.cr (also used by VertexAI).
+      def structured_output_config(schema : JSON::Any, model : Model::Info) : Hash(String, JSON::Any)
+        GeminiSchema.structured_output_config(schema, model)
       end
 
       def parse_completion_response(response : Crest::Response) : Message

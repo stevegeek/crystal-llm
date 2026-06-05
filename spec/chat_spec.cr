@@ -10,11 +10,15 @@ class ChatSpecFakeProvider < CrystalLLM::Provider
   # Records each batch of messages the chat passed in (to assert accumulation).
   class_property seen_messages : Array(Array(CrystalLLM::Message)) = [] of Array(CrystalLLM::Message)
   class_property last_temperature : Float64? = nil
+  # Records the tool_prefs passed on each `complete` call (to assert the chat
+  # threads its tool-choice state and resets a forced choice between turns).
+  class_property seen_tool_prefs : Array(Hash(String, String?)?) = [] of Hash(String, String?)?
 
   def self.reset! : Nil
     self.scripted = [] of CrystalLLM::Message
     self.seen_messages = [] of Array(CrystalLLM::Message)
     self.last_temperature = nil
+    self.seen_tool_prefs = [] of Hash(String, String?)?
   end
 
   def self.configuration_requirements : Array(String)
@@ -27,9 +31,11 @@ class ChatSpecFakeProvider < CrystalLLM::Provider
                params : Hash(String, JSON::Any) = {} of String => JSON::Any,
                headers : Hash(String, String) = {} of String => String,
                schema : JSON::Any? = nil,
-               thinking : CrystalLLM::Thinking::Config? = nil) : CrystalLLM::Message
+               thinking : CrystalLLM::Thinking::Config? = nil,
+               tool_prefs : Hash(String, String?)? = nil) : CrystalLLM::Message
     self.class.seen_messages << messages.dup
     self.class.last_temperature = temperature
+    self.class.seen_tool_prefs << tool_prefs.try(&.dup)
     next_scripted
   end
 
@@ -40,8 +46,10 @@ class ChatSpecFakeProvider < CrystalLLM::Provider
                headers : Hash(String, String) = {} of String => String,
                schema : JSON::Any? = nil,
                thinking : CrystalLLM::Thinking::Config? = nil,
+               tool_prefs : Hash(String, String?)? = nil,
                &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
     self.class.seen_messages << messages.dup
+    self.class.seen_tool_prefs << tool_prefs.try(&.dup)
     message = next_scripted
     # Emit one chunk carrying the message's text so streaming callers see data.
     text = message.content
@@ -163,6 +171,39 @@ describe CrystalLLM::Chat do
       tool_message = chat.messages[2]
       tool_message.role.should eq(CrystalLLM::Role::Tool)
       tool_message.content.as(String).should contain("unavailable tool")
+    end
+
+    it "forwards tool_prefs to the provider on each completion" do
+      ChatSpecFakeProvider.scripted = [assistant("ok")]
+      chat = new_chat.with_tool(ChatSpecEchoTool.new, choice: "auto", calls: "many")
+
+      chat.ask("hi")
+
+      ChatSpecFakeProvider.seen_tool_prefs.size.should eq(1)
+      prefs = ChatSpecFakeProvider.seen_tool_prefs.first.as(Hash(String, String?))
+      prefs["choice"].should eq("auto")
+      prefs["calls"].should eq("many")
+    end
+
+    it "resets a forced tool choice after the forced call (per-turn :calls limit)" do
+      # First completion is FORCED to call the tool (choice == tool name); after
+      # the tool runs, forced_tool_choice? triggers reset_tool_choice, so the
+      # follow-up completion sees choice == nil.
+      args = {"word" => JSON::Any.new("crystal")} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [
+        tool_call_message("call_1", "chat_spec_echo", args),
+        assistant("done"),
+      ]
+      chat = new_chat.with_tool(ChatSpecEchoTool.new, choice: "chat_spec_echo")
+
+      chat.ask("use the tool")
+
+      ChatSpecFakeProvider.seen_tool_prefs.size.should eq(2)
+      first = ChatSpecFakeProvider.seen_tool_prefs[0].as(Hash(String, String?))
+      second = ChatSpecFakeProvider.seen_tool_prefs[1].as(Hash(String, String?))
+      first["choice"].should eq("chat_spec_echo")
+      # forced choice was reset before the second completion
+      second["choice"].should be_nil
     end
   end
 

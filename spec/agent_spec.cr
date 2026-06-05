@@ -21,7 +21,8 @@ class AgentSpecFakeProvider < CrystalLLM::Provider
                params : Hash(String, JSON::Any) = {} of String => JSON::Any,
                headers : Hash(String, String) = {} of String => String,
                schema : JSON::Any? = nil,
-               thinking : CrystalLLM::Thinking::Config? = nil) : CrystalLLM::Message
+               thinking : CrystalLLM::Thinking::Config? = nil,
+               tool_prefs : Hash(String, String?)? = nil) : CrystalLLM::Message
     self.class.scripted.shift
   end
 
@@ -32,6 +33,7 @@ class AgentSpecFakeProvider < CrystalLLM::Provider
                headers : Hash(String, String) = {} of String => String,
                schema : JSON::Any? = nil,
                thinking : CrystalLLM::Thinking::Config? = nil,
+               tool_prefs : Hash(String, String?)? = nil,
                &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
     message = self.class.scripted.shift
     text = message.content

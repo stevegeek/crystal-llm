@@ -154,9 +154,55 @@ describe CrystalLLM::Providers::Gemini do
       params["required"].as_a.map(&.as_s).should eq(["q"])
     end
 
-    it "honors a schema via responseMimeType + responseSchema (deferred passthrough)" do
+    it "emits toolConfig.functionCallingConfig (any + allowedFunctionNames) from tool_prefs" do
       provider = configured_gemini
-      schema = JSON.parse(%({"name":"person","schema":{"type":"object"}}))
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: flash_model,
+        stream: false,
+        # calls is ignored by Gemini (no parallel control)
+        tool_prefs: {"choice" => "search", "calls" => "one"} of String => String?
+      )
+      fcc = payload["toolConfig"].as_h["functionCallingConfig"].as_h
+      fcc["mode"].as_s.should eq("any")
+      fcc["allowedFunctionNames"].as_a.map(&.as_s).should eq(["search"])
+    end
+
+    it "maps choice=auto to mode auto with no allowedFunctionNames" do
+      provider = configured_gemini
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: flash_model,
+        stream: false,
+        tool_prefs: {"choice" => "auto", "calls" => nil} of String => String?
+      )
+      fcc = payload["toolConfig"].as_h["functionCallingConfig"].as_h
+      fcc["mode"].as_s.should eq("auto")
+      fcc.has_key?("allowedFunctionNames").should be_false
+    end
+
+    it "omits toolConfig when tool_prefs is nil" do
+      provider = configured_gemini
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: flash_model,
+        stream: false
+      )
+      payload.has_key?("toolConfig").should be_false
+    end
+
+    it "rewrites a schema into Gemini responseSchema (uppercased types) for a < 2.5 model" do
+      provider = configured_gemini
+      schema = JSON.parse(%({"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"}}}}))
       payload = provider.render_payload(
         [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
         tools: {} of String => CrystalLLM::Tool,
@@ -167,7 +213,10 @@ describe CrystalLLM::Providers::Gemini do
       )
       gen = payload["generationConfig"].as_h
       gen["responseMimeType"].as_s.should eq("application/json")
-      gen["responseSchema"].as_h["type"].as_s.should eq("object")
+      gen.has_key?("responseJsonSchema").should be_false
+      rs = gen["responseSchema"].as_h
+      rs["type"].as_s.should eq("OBJECT")
+      rs["properties"].as_h["name"].as_h["type"].as_s.should eq("STRING")
     end
 
     it "adds a thinkingConfig when thinking is enabled" do

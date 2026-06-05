@@ -183,6 +183,24 @@ describe CrystalLLM::Providers::Mistral do
       named["type"].as_s.should eq("function")
       named["function"].as_h["name"].as_s.should eq("my_tool")
     end
+
+    it "threads tool_prefs through super: required + single tool → named function" do
+      provider = configured_mistral
+      tool = CrystalLLM::DynamicTool.new("search", "Search", {} of String => JSON::Any) { |_| "" }
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {"search" => tool.as(CrystalLLM::Tool)},
+        temperature: nil,
+        model: mistral_model,
+        stream: false,
+        tool_prefs: {"choice" => "required", "calls" => nil} of String => String?
+      )
+      # required → "any" (build_tool_choice override) → normalized to the named
+      # function because exactly one tool is offered.
+      tc = payload["tool_choice"].as_h
+      tc["type"].as_s.should eq("function")
+      tc["function"].as_h["name"].as_s.should eq("search")
+    end
   end
 
   describe "#format_role" do

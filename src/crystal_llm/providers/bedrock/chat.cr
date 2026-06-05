@@ -7,17 +7,18 @@
 #   ruby_llm, where `@model` is stashed by render_payload. The frozen interface's
 #   url hooks take no model argument, so the port keeps a `@current_model` ivar set
 #   by render_payload (mirroring ruby_llm's `@model`).
-# - `messages` partition into system/chat is ported. The Media mixin's rich
-#   attachment formatting is DEFERRED (attachment-provider work); render_message_content
-#   here handles the text / Content::Raw / tool_call paths chat needs and renders a
-#   plain `{text: ...}` block for simple text content. See `render_message_content`.
+# - `messages` partition into system/chat is ported. render_message_content handles
+#   the text / Content::Raw / tool_call paths and now also emits rich attachment blocks
+#   (image / document / text) via the Bedrock::Media module — see
+#   `render_attachment_blocks`. System messages stay text-only (Bedrock system blocks).
 # - `render_payload` returns `Hash(String, JSON::Any)`. Symbol-keyed Ruby payloads
 #   become String-keyed JSON::Any (the Bedrock wire uses camelCase keys verbatim).
 # - thinking text/signature extraction onto Message is deferred (Message#thinking
 #   deferred); reasoning_tokens ARE wired into Tokens.
-# - `tool_prefs` is deferred at the completion-pipeline level (see provider_completion.cr);
-#   render_tool_config therefore renders only the `tools` list (no toolChoice). The
-#   choice helper is retained as `render_tool_choice` for when tool_prefs lands.
+# - `tool_prefs` is threaded: `render_tool_config(tools, tool_prefs)` emits
+#   `toolConfig.toolChoice` from `tool_prefs["choice"]` via `render_tool_choice`
+#   (`{auto:{}}` / nil / `{any:{}}` / `{tool:{name}}`). Bedrock Converse has no
+#   parallel-call control, so `calls` is ignored (ruby_llm parity).
 require "json"
 require "../bedrock"
 
@@ -27,8 +28,8 @@ module CrystalLLM
       # Set by render_payload (mirrors ruby_llm's `@model` instance state); read by
       # completion_url / stream_url which take no model arg in the frozen interface.
       @current_model : Model::Info? = nil
-      # ruby_llm's `@used_document_names` (document-name de-dup across a payload).
-      # Tracked for parity even though rich document rendering is deferred.
+      # ruby_llm's `@used_document_names` (document-name de-dup across a payload);
+      # reset per render_payload and threaded into Bedrock::Media.render_attachment.
       @used_document_names = {} of String => Int32
 
       def completion_url : String
@@ -38,7 +39,8 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
         @current_model = model
         @used_document_names = {} of String => Int32
 
@@ -53,7 +55,7 @@ module CrystalLLM
 
         payload["inferenceConfig"] = JSON::Any.new(render_inference_config(temperature))
 
-        if tool_config = render_tool_config(tools)
+        if tool_config = render_tool_config(tools, tool_prefs)
           payload["toolConfig"] = JSON::Any.new(tool_config)
           # Internal mirror for shared payload inspections in specs (ruby_llm parity).
           payload["tools"] = tool_config["tools"]
@@ -169,6 +171,7 @@ module CrystalLLM
         blocks = [] of JSON::Any
         text_blocks = render_text_content(content)
         blocks.concat(text_blocks)
+        blocks.concat(render_attachment_blocks(content))
 
         if msg.tool_call?
           if calls = msg.tool_calls
@@ -206,6 +209,18 @@ module CrystalLLM
 
       private def text_block(text : String) : JSON::Any
         JSON::Any.new({"text" => JSON::Any.new(text)} of String => JSON::Any)
+      end
+
+      # Renders a Content's attachments into Converse content blocks (image / document /
+      # text). Mirrors ruby_llm's render_content_object attachment loop, threading the
+      # payload-scoped `@used_document_names` for document-name de-dup. Non-Content
+      # content carries no attachments and yields no blocks.
+      private def render_attachment_blocks(content : String | Content | Nil) : Array(JSON::Any)
+        return [] of JSON::Any unless content.is_a?(Content)
+
+        content.attachments.map do |attachment|
+          Media.render_attachment(attachment, @used_document_names)
+        end
       end
 
       private def render_raw_content(content : Content::Raw) : Array(JSON::Any)
@@ -290,14 +305,24 @@ module CrystalLLM
 
       # ---- Tools ----
 
-      # NOTE: tool_prefs (toolChoice) deferred at the pipeline level; only the tools
-      # list is rendered here. render_tool_choice retained for when it lands.
-      def render_tool_config(tools : Hash(String, Tool)) : Hash(String, JSON::Any)?
+      # Renders `toolConfig`: the tools list plus an optional `toolChoice` derived
+      # from `tool_prefs["choice"]` (via render_tool_choice).
+      def render_tool_config(tools : Hash(String, Tool),
+                             tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)?
         return nil if tools.empty?
 
-        {
+        config = {
           "tools" => JSON::Any.new(tools.map { |_, tool| render_tool(tool) }),
         } of String => JSON::Any
+
+        choice = tool_prefs.try(&.["choice"]?)
+        unless choice.nil?
+          if tool_choice = render_tool_choice(choice)
+            config["toolChoice"] = JSON::Any.new(tool_choice)
+          end
+        end
+
+        config
       end
 
       def render_tool_choice(choice : String) : Hash(String, JSON::Any)?

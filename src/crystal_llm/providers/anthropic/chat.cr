@@ -3,8 +3,11 @@
 # The Anthropic Messages API request/response surface.
 #
 # Divergences:
-# - `render_payload` matches the completion pipeline's hook signature (no `tool_prefs`;
-#   deferred — see provider_completion.cr). It returns `Hash(String, JSON::Any)`.
+# - `render_payload` matches the completion pipeline's hook signature, including
+#   `tool_prefs`. When tools are present and either `choice` or `calls` is set, it
+#   emits `tool_choice` via `Tools.build_tool_choice(choice, calls)` —
+#   `{type: auto|none|any|tool, name?, disable_parallel_tool_use?}` (`calls == "one"`
+#   sets the disable flag). It returns `Hash(String, JSON::Any)`.
 # - System messages are partitioned out and rendered as a top-level `system` array of
 #   text content blocks (Anthropic's shape); chat messages become content-block
 #   messages. `max_tokens` defaults to `model.max_tokens || 4096`.
@@ -32,12 +35,13 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
         system_messages, chat_messages = separate_messages(messages)
         system_content = build_system_content(system_messages)
 
         payload = build_base_payload(chat_messages, model, stream, thinking)
-        add_optional_fields(payload, system_content, tools, temperature, schema)
+        add_optional_fields(payload, system_content, tools, temperature, schema, tool_prefs)
         payload
       end
 
@@ -93,9 +97,16 @@ module CrystalLLM
 
       def add_optional_fields(payload : Hash(String, JSON::Any),
                               system_content : Array(JSON::Any), tools : Hash(String, Tool),
-                              temperature : Float64?, schema : JSON::Any?) : Nil
+                              temperature : Float64?, schema : JSON::Any?,
+                              tool_prefs : Hash(String, String?)? = nil) : Nil
+        prefs = tool_prefs || {} of String => String?
         unless tools.empty?
           payload["tools"] = JSON::Any.new(tools.map { |_, tool| Tools.function_for(tool) })
+          choice = prefs["choice"]?
+          calls = prefs["calls"]?
+          unless choice.nil? && calls.nil?
+            payload["tool_choice"] = Tools.build_tool_choice(choice, calls)
+          end
         end
         payload["system"] = JSON::Any.new(system_content) unless system_content.empty?
         payload["temperature"] = JSON::Any.new(temperature) unless temperature.nil?

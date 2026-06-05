@@ -265,8 +265,10 @@ module CrystalLLM
         } of String => JSON::Any)]
       end
 
-      # toolConfig.functionCallingConfig wire value (ported; unused until tool_prefs
-      # is wired back at the chat/agent layer — see gemini.cr divergence note).
+      # toolConfig.functionCallingConfig wire value. `tool_choice` is "auto"/"none"/
+      # "required" or a named-tool string; "required" or a specific name map to mode
+      # "any" (the latter adding allowedFunctionNames). Emitted by render_payload from
+      # `tool_prefs["choice"]`.
       def build_tool_config(tool_choice : String) : JSON::Any
         config = {} of String => JSON::Any
         config["mode"] = JSON::Any.new(forced_tool_choice?(tool_choice) ? "any" : tool_choice)

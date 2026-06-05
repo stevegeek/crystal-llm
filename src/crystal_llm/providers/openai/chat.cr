@@ -3,8 +3,10 @@
 # The OpenAI chat completions request/response surface.
 #
 # Divergences:
-# - `render_payload` matches the completion pipeline's hook signature (no `tool_prefs`;
-#   deferred — see provider_completion.cr). It returns `Hash(String, JSON::Any)`.
+# - `render_payload` matches the completion pipeline's hook signature, including
+#   `tool_prefs` (Chat's `{"choice" => ..., "calls" => ...}` state). When tools are
+#   present, `choice` → `tool_choice` (via `build_tool_choice`) and `calls` →
+#   `parallel_tool_calls` (`"many"` ⇒ true). It returns `Hash(String, JSON::Any)`.
 # - `schema` is a `JSON::Any?` (the envelope `{name, schema, strict}` from the chat
 #   layer), read with `as_h?`/`dig?` rather than Ruby symbol keys.
 # - `thinking` is a `Thinking::Config?`; `resolve_effort` reads `.effort` (the
@@ -31,7 +33,9 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
+        prefs = tool_prefs || {} of String => String?
         payload = {
           "model"    => JSON::Any.new(model.id),
           "messages" => JSON::Any.new(format_messages(messages)),
@@ -42,6 +46,12 @@ module CrystalLLM
 
         unless tools.empty?
           payload["tools"] = JSON::Any.new(tools.map { |_, tool| tool_for(tool) })
+          if choice = prefs["choice"]?
+            payload["tool_choice"] = build_tool_choice(choice)
+          end
+          unless (calls = prefs["calls"]?).nil?
+            payload["parallel_tool_calls"] = JSON::Any.new(calls == "many")
+          end
         end
 
         if schema && (schema_hash = schema.as_h?)
@@ -164,7 +174,7 @@ module CrystalLLM
         messages.map do |msg|
           entry = {} of String => JSON::Any
           entry["role"] = JSON::Any.new(format_role(msg.role))
-          entry["content"] = Media.format_content(format_content_arg(msg.content))
+          entry["content"] = format_content(format_content_arg(msg.content))
           if formatted = format_tool_calls(msg.tool_calls)
             entry["tool_calls"] = formatted
           end
@@ -199,6 +209,14 @@ module CrystalLLM
 
       private def format_content_arg(content : String | Content | Nil) : String | Content | Content::Raw | Nil
         content
+      end
+
+      # The provider's content-formatting hook. Base OpenAI delegates to Media with
+      # the default attachment policy (documents: PDF only, image + audio enabled).
+      # OpenAI-compatible subclasses (DeepSeek, xAI) override this to apply their own,
+      # stricter attachment gating (mirrors ruby_llm's per-provider `format_content`).
+      def format_content(content : String | Content | Content::Raw | Nil) : JSON::Any
+        Media.format_content(content)
       end
 
       def format_role(role : Role) : String

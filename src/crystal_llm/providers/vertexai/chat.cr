@@ -6,12 +6,15 @@
 # render_payload / parse_completion_response / format_messages are the Gemini wire format.
 #
 # Divergences:
-# - `render_payload` matches the frozen completion-pipeline hook signature (no
-#   `tool_prefs`; deferred — see provider_completion.cr). Returns Hash(String, JSON::Any).
-# - `schema` is a JSON::Any? envelope. Full Gemini structured-output conversion
-#   (GeminiSchema / responseJsonSchema / responseSchema) is DEFERRED (chat-only scope):
-#   when a schema is present we set only `responseMimeType: application/json` (the
-#   common envelope), NOT the converted schema body. Documented divergence.
+# - `render_payload` matches the completion-pipeline hook signature, including
+#   `tool_prefs`. When tools are present and `choice` is set it emits
+#   `toolConfig.functionCallingConfig` via `build_tool_config(choice)` (Gemini
+#   shape); Vertex has no parallel-call control, so `calls` is ignored. Returns
+#   Hash(String, JSON::Any).
+# - `schema` is a JSON::Any? envelope. Gemini structured-output conversion is PORTED
+#   and SHARED with the native Gemini provider: render_payload delegates to
+#   `GeminiSchema.structured_output_config` (gemini/schema.cr) — responseMimeType plus
+#   responseJsonSchema (Gemini >= 2.5) or the rewritten responseSchema.
 # - `thinking` is a Thinking::Config?; thinkingConfig wiring is DEFERRED (the schema/
 #   thinking conversion lives with structured-output, out of chat-only scope).
 # - thinking text/signature *extraction* into Message is deferred (Message#thinking
@@ -37,16 +40,18 @@ module CrystalLLM
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),
                          temperature : Float64?, model : Model::Info,
                          stream : Bool = false, schema : JSON::Any? = nil,
-                         thinking : Thinking::Config? = nil) : Hash(String, JSON::Any)
+                         thinking : Thinking::Config? = nil,
+                         tool_prefs : Hash(String, String?)? = nil) : Hash(String, JSON::Any)
         @last_model = model.id
+        prefs = tool_prefs || {} of String => String?
 
         generation_config = {} of String => JSON::Any
         generation_config["temperature"] = JSON::Any.new(temperature) unless temperature.nil?
 
-        # DEFERRED: full structured-output schema conversion (see file header). When a
-        # schema is supplied we set the common responseMimeType envelope only.
-        if schema && schema.as_h?
-          generation_config["responseMimeType"] = JSON::Any.new("application/json")
+        # Structured-output schema conversion via the shared GeminiSchema rewriter +
+        # responseJsonSchema-vs-responseSchema version gate (gemini/schema.cr).
+        if schema
+          GeminiSchema.structured_output_config(schema, model).each { |k, v| generation_config[k] = v }
         end
 
         payload = {
@@ -56,6 +61,10 @@ module CrystalLLM
 
         unless tools.empty?
           payload["tools"] = JSON::Any.new(format_tools(tools))
+          # Vertex (Gemini wire) has no parallel-call control, so `calls` is ignored.
+          if choice = prefs["choice"]?
+            payload["toolConfig"] = build_tool_config(choice)
+          end
         end
 
         payload

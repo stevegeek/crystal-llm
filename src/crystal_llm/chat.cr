@@ -40,10 +40,12 @@
 #   over a message list isn't ported). Noted in deferrals.
 #
 # * `tool_prefs` (`:choice` / `:calls`): the per-call tool-choice preference and
-#   the tool-call *limit* are ported as Chat state. ruby_llm's `:choice` is NOT
-#   yet forwarded to the provider (Provider#render_payload omits `tool_prefs:` —
-#   that hook firms up later, see provider_completion.cr's header). The `:calls`
-#   limit ("one" vs "many") IS enforced in the tool loop here. Noted in deferrals.
+#   the tool-call *limit* are ported as Chat state AND forwarded to the provider —
+#   `complete_once` passes `@tool_prefs` through `Provider#complete` →
+#   `render_payload`, where each provider emits its wire-specific tool_choice /
+#   parallel control. The `:calls` limit ("one" vs "many") additionally drives the
+#   forced-tool-choice reset in the tool loop here (`reset_tool_choice` after a
+#   forced call, so the next turn isn't re-forced).
 #
 # * `@context` / `@config`: a Chat resolves its provider through the (optional)
 #   Context's config, falling back to `CrystalLLM.config`. `with_context` re-binds
@@ -341,7 +343,8 @@ module CrystalLLM
         params: @params,
         headers: @headers,
         schema: @schema,
-        thinking: @thinking
+        thinking: @thinking,
+        tool_prefs: @tool_prefs
       )
 
       run_message_callbacks("before_message", response) # mirror ruby_llm's non-stream path
@@ -368,6 +371,7 @@ module CrystalLLM
         headers: @headers,
         schema: @schema,
         thinking: @thinking,
+        tool_prefs: @tool_prefs,
         &block
       )
 
