@@ -391,7 +391,7 @@ module CrystalLLM
     # in one shot (say/messages/tools/model/complete/with_*/…), subsuming the
     # explicit delegator list. `ask` is spelled out so its typed return
     # (`CrystalLLM::Message`) and default arg are visible / inspectable.
-    def ask(message : String? = nil) : CrystalLLM::Message
+    def ask(message : String? = nil) : CrystalLLM::Message | CrystalLLM::Tool::Halt
       @chat.ask(message)
     end
 
@@ -400,21 +400,21 @@ module CrystalLLM
     # not a passed block). ruby_llm's `def_delegators` forwards both, so these
     # explicit overloads delegate the block + attachment surface to `@chat`.
 
-    def ask(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil) : CrystalLLM::Message
+    def ask(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil) : CrystalLLM::Message | CrystalLLM::Tool::Halt
       @chat.ask(message, with: attachments)
     end
 
     def ask(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil,
-            &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+            &block : CrystalLLM::Chunk ->) : CrystalLLM::Message | CrystalLLM::Tool::Halt
       @chat.ask(message, with: attachments, &block)
     end
 
-    def say(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil) : CrystalLLM::Message
+    def say(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil) : CrystalLLM::Message | CrystalLLM::Tool::Halt
       @chat.say(message, with: attachments)
     end
 
     def say(message : String? = nil, with attachments : CrystalLLM::Attachable? = nil,
-            &block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+            &block : CrystalLLM::Chunk ->) : CrystalLLM::Message | CrystalLLM::Tool::Halt
       @chat.say(message, with: attachments, &block)
     end
 
@@ -422,7 +422,7 @@ module CrystalLLM
       @chat.each(&block)
     end
 
-    def complete(&block : CrystalLLM::Chunk ->) : CrystalLLM::Message
+    def complete(&block : CrystalLLM::Chunk ->) : CrystalLLM::Message | CrystalLLM::Tool::Halt
       @chat.complete(&block)
     end
 

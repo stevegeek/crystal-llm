@@ -58,6 +58,49 @@ module CrystalLLM
       def self.configuration_options : Array(String)
         %w[openrouter_api_key openrouter_api_base]
       end
+
+      # OpenRouter wraps the upstream provider's own error inside
+      # `error.metadata.raw` (a JSON-encoded *string*). When present, ruby_llm
+      # appends the inner provider message: "<outer message> - <inner message>".
+      # Mirrors ruby_llm OpenRouter#parse_error / #parse_error_part_message.
+      def parse_error(response : Crest::Response) : String?
+        body = response.body
+        return nil if body.empty?
+
+        parsed = parse_json(body)
+        return body if parsed.nil?
+
+        if hash = parsed.as_h?
+          parse_error_part_message(hash)
+        elsif array = parsed.as_a?
+          array.compact_map do |part|
+            part.as_h?.try { |part_hash| parse_error_part_message(part_hash) }
+          end.join(". ")
+        else
+          parsed.as_s?
+        end
+      end
+
+      # Extracts `error.message`, optionally enriched with the nested provider
+      # message decoded from `error.metadata.raw` (itself a JSON-encoded string
+      # holding another `{error: {message}}`).
+      private def parse_error_part_message(part : Hash(String, JSON::Any)) : String?
+        error = part["error"]?.try(&.as_h?)
+        return nil unless error
+        message = error["message"]?.try(&.as_s?)
+
+        raw_any = error.dig?("metadata", "raw")
+        raw = raw_any.try(&.as_s?).try { |raw_str| parse_json(raw_str) }
+        raw_hash = raw.try(&.as_h?)
+        return message unless raw_hash
+
+        raw_message = raw_hash.dig?("error", "message").try(&.as_s?)
+        if raw_message
+          [message, raw_message].compact.join(" - ")
+        else
+          message
+        end
+      end
     end
   end
 end

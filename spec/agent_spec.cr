@@ -7,16 +7,18 @@ require "../src/crystal_llm/agent"
 class AgentSpecFakeProvider < CrystalLLM::Provider
   class_property scripted : Array(CrystalLLM::Message) = [] of CrystalLLM::Message
   # Captured on the last `complete` call so tests can assert the Agent applied
-  # `thinking`/`headers`/`schema` to the Chat that drives this provider.
+  # `thinking`/`headers`/`schema`/`params` to the Chat that drives this provider.
   class_property captured_thinking : CrystalLLM::Thinking::Config? = nil
   class_property captured_headers : Hash(String, String) = {} of String => String
   class_property captured_schema : JSON::Any? = nil
+  class_property captured_params : Hash(String, JSON::Any) = {} of String => JSON::Any
 
   def self.reset! : Nil
     self.scripted = [] of CrystalLLM::Message
     self.captured_thinking = nil
     self.captured_headers = {} of String => String
     self.captured_schema = nil
+    self.captured_params = {} of String => JSON::Any
   end
 
   def self.configuration_requirements : Array(String)
@@ -34,6 +36,7 @@ class AgentSpecFakeProvider < CrystalLLM::Provider
     self.class.captured_thinking = thinking
     self.class.captured_headers = headers
     self.class.captured_schema = schema
+    self.class.captured_params = params
     self.class.scripted.shift
   end
 
@@ -117,6 +120,12 @@ private class ConfiguredAgent < CrystalLLM::Agent
   thinking effort: "high"
 end
 
+# An agent with static `params` (the replace-not-merge `with_params` payload).
+private class ParamsAgent < CrystalLLM::Agent
+  model "agent-fake-model"
+  params({"max_output_tokens" => JSON::Any.new(256_i64)})
+end
+
 # A ctx-block schema resolved against a typed input.
 private class DynamicSchemaAgent < CrystalLLM::Agent
   model "agent-fake-model"
@@ -195,6 +204,18 @@ describe CrystalLLM::Agent do
       ConfiguredAgent.new.ask("q")
       captured = AgentSpecFakeProvider.captured_thinking
       (captured || fail "expected thinking to be applied").effort.should eq("high")
+    end
+
+    # #18: static `params` declared on the Agent thread through the built Chat
+    # (`with_params`) into the provider's `complete` call.
+    it "threads static params through the built Chat into the provider" do
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "ok"),
+      ]
+      ParamsAgent.new.ask("q")
+      AgentSpecFakeProvider.captured_params.should eq(
+        {"max_output_tokens" => JSON::Any.new(256_i64)}
+      )
     end
   end
 

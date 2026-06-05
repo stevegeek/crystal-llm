@@ -418,7 +418,10 @@ module CrystalLLM
         self.class.required_properties.map { |req| JSON::Any.new(req) }
       )
       schema["additionalProperties"] = JSON::Any.new(self.class.additional_properties)
-      if s = self.class.strict
+      # Mirror Ruby's `schema_hash[:strict] = strict unless strict.nil?`: only
+      # `nil` omits the key. `strict false` must still emit `"strict": false`
+      # (a truthiness check would wrongly drop it).
+      unless (s = self.class.strict).nil?
         schema["strict"] = JSON::Any.new(s)
       end
       unless self.class.definitions.empty?

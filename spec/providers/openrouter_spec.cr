@@ -370,4 +370,24 @@ describe CrystalLLM::Providers::OpenRouter do
       model.capabilities.should be_empty
     end
   end
+
+  describe "#parse_error" do
+    it "appends the nested provider message from error.metadata.raw" do
+      body = File.read(File.join(__DIR__, "..", "fixtures", "cassettes", "openrouter", "error_403.json"))
+      message = configured_openrouter.parse_error(build_response(403, body))
+      message.should eq(
+        "Provider returned error - Your credit balance is too low to access the Anthropic API."
+      )
+    end
+
+    it "returns just the outer message when metadata.raw is absent" do
+      body = %({"error": {"message": "Rate limited", "code": 429}})
+      configured_openrouter.parse_error(build_response(429, body)).should eq("Rate limited")
+    end
+
+    it "returns the outer message when metadata.raw has no inner error message" do
+      body = %({"error": {"message": "Bad gateway", "metadata": {"raw": "{\\"foo\\":\\"bar\\"}"}}})
+      configured_openrouter.parse_error(build_response(502, body)).should eq("Bad gateway")
+    end
+  end
 end

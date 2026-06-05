@@ -47,8 +47,11 @@
 #
 # * `transcribe`'s `speaker_references` encoding still depends on the not-yet-ported
 #   `Attachment#for_llm` data-URL surface and raises a clear "deferred" error.
-# * `RRubyLLM.instrument(...)` wrapping in the class methods is DEFERRED (the
-#   instrumentation port hasn't landed — same as chat.cr / facade.cr).
+# * `instrument(...)` wrapping in the paint/moderate/transcribe class methods is
+#   DEFERRED (no Ruby parity event for those). `embed` DOES emit an
+#   `embedding.crystal_llm` event (a deferred-divergence IMPL added for parity with
+#   `chat.crystal_llm` — ruby_llm itself has no embed instrumentation; see the
+#   `#embed` pipeline below).
 require "json"
 require "crest"
 require "./provider"
@@ -65,6 +68,7 @@ require "./model/info"
 require "./configuration"
 require "./context"
 require "./error"
+require "./instrumentation"
 
 module CrystalLLM
   class Provider
@@ -80,11 +84,33 @@ module CrystalLLM
     # ---- Media request pipeline (mirrors provider.rb) ----
 
     # Generates embedding vectors for *text* (a string or a batch). Mirrors
-    # ruby_llm's `Provider#embed`.
+    # ruby_llm's `Provider#embed`, plus an `embedding.crystal_llm` instrumentation
+    # event (a deferred-divergence IMPL for parity with `chat.crystal_llm` —
+    # ruby_llm has no embed instrumentation). The request-side payload carries
+    # provider/model/input; the response-side keys (embedding_dimensions /
+    # embedding_count) are attached after the work runs. A no-op when no
+    # instrumenter is configured.
     def embed(text : TextInput, model : String, dimensions : Int32? = nil) : Embedding
-      payload = render_embedding_payload(text, model: model, dimensions: dimensions)
-      response = connection.post(embedding_url(model: model), payload.to_json)
-      parse_embedding_response(response, model: model, text: text)
+      event_payload = build_embedding_payload(text, model)
+      CrystalLLM.instrument("embedding.crystal_llm", event_payload, config: config) do |event|
+        payload = render_embedding_payload(text, model: model, dimensions: dimensions)
+        response = connection.post(embedding_url(model: model), payload.to_json)
+        embedding = parse_embedding_response(response, model: model, text: text)
+        event["embedding_dimensions"] = Embedding.vector_dimensions(embedding.vectors)
+        event["embedding_count"] = Embedding.embedding_count(embedding.vectors)
+        embedding
+      end
+    end
+
+    # The request-side `embedding.crystal_llm` payload (provider / model / input).
+    # Mirrors `build_chat_payload`'s shape for the embed pipeline.
+    private def build_embedding_payload(text : TextInput, model : String) : Instrumentation::Payload
+      payload = Instrumentation::Payload.new
+      payload["provider"] = slug
+      payload["provider_class"] = self.class
+      payload["model"] = model
+      payload["input"] = text
+      payload
     end
 
     # Runs a moderation request over *input*. Mirrors ruby_llm's `Provider#moderate`.

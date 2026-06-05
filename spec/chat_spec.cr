@@ -66,6 +66,13 @@ end
 
 CrystalLLM::Provider.register("chat_spec_fake", ChatSpecFakeProvider)
 
+# A second registered fake provider, used by the `#with_model` swap test to prove
+# the provider is re-resolved (not just the model id) mid-conversation.
+class ChatSpecFakeProviderTwo < ChatSpecFakeProvider
+end
+
+CrystalLLM::Provider.register("chat_spec_fake_two", ChatSpecFakeProviderTwo)
+
 # A trivial tool used to exercise the tool-call loop offline.
 class ChatSpecEchoTool < CrystalLLM::Tool
   description "Echoes the supplied word"
@@ -73,6 +80,16 @@ class ChatSpecEchoTool < CrystalLLM::Tool
 
   def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
     "echo: #{args["word"].as_s}"
+  end
+end
+
+# A tool that halts the conversation (returns a Tool::Halt), used to assert the
+# loop stops WITHOUT a follow-up completion.
+class ChatSpecHaltingTool < CrystalLLM::Tool
+  description "Halts the conversation"
+
+  def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
+    halt("stopped here")
   end
 end
 
@@ -103,7 +120,7 @@ describe CrystalLLM::Chat do
       ChatSpecFakeProvider.scripted = [assistant("hi there")]
       chat = new_chat
 
-      response = chat.ask("hello")
+      response = chat.ask("hello").as(CrystalLLM::Message)
 
       response.role.should eq(CrystalLLM::Role::Assistant)
       response.content.should eq("hi there")
@@ -117,7 +134,7 @@ describe CrystalLLM::Chat do
     it "is aliased as say" do
       ChatSpecFakeProvider.scripted = [assistant("said")]
       chat = new_chat
-      chat.say("speak").content.should eq("said")
+      chat.say("speak").as(CrystalLLM::Message).content.should eq("said")
     end
   end
 
@@ -130,7 +147,7 @@ describe CrystalLLM::Chat do
       response = chat.ask("hello") do |chunk|
         c = chunk.content
         chunks << c if c.is_a?(String)
-      end
+      end.as(CrystalLLM::Message)
 
       response.content.should eq("streamed")
       chunks.should eq(["streamed"])
@@ -146,7 +163,7 @@ describe CrystalLLM::Chat do
       ]
       chat = new_chat.with_tool(ChatSpecEchoTool.new)
 
-      response = chat.ask("use the tool")
+      response = chat.ask("use the tool").as(CrystalLLM::Message)
 
       response.content.should eq("done")
       # user, assistant(tool_call), tool result, assistant(done)
@@ -165,12 +182,53 @@ describe CrystalLLM::Chat do
       ]
       chat = new_chat
 
-      response = chat.ask("call missing tool")
+      # #7: after_tool_result (the additive form aliased by on_tool_result) fires
+      # with the synthesized error payload when the model calls an unregistered tool.
+      seen_results = [] of CrystalLLM::ToolResult
+      chat.after_tool_result { |result| seen_results << result }
+
+      response = chat.ask("call missing tool").as(CrystalLLM::Message)
 
       response.content.should eq("recovered")
       tool_message = chat.messages[2]
       tool_message.role.should eq(CrystalLLM::Role::Tool)
       tool_message.content.as(String).should contain("unavailable tool")
+
+      # the callback observed the error result (a `{ "error" => ... }` Hash payload)
+      seen_results.size.should eq(1)
+      error_result = seen_results.first
+      error_hash = error_result.as(Hash(String, JSON::Any))
+      error_hash["error"].as_s.should contain("unavailable tool `nonexistent`")
+    end
+
+    # #6: a tool that halts returns the Tool::Halt itself (NOT a follow-up
+    # completion), and the halt content is still appended as a tool-role message.
+    it "returns Tool::Halt without a second completion when a tool halts" do
+      args = {} of String => JSON::Any
+      # ONLY a single scripted response: the tool_call. There is deliberately NO
+      # follow-up assistant message — if the loop tried to re-complete it would
+      # raise "ran out of scripted responses".
+      ChatSpecFakeProvider.scripted = [
+        tool_call_message("call_h", "chat_spec_halting", args),
+      ]
+      chat = new_chat.with_tool(ChatSpecHaltingTool.new)
+
+      result = chat.ask("halt please")
+
+      # the return value is the Tool::Halt sentinel, not a Message
+      result.should be_a(CrystalLLM::Tool::Halt)
+      result.as(CrystalLLM::Tool::Halt).content.should eq("stopped here")
+
+      # exactly ONE completion ran (no follow-up)
+      ChatSpecFakeProvider.seen_messages.size.should eq(1)
+
+      # the halt content was appended as a tool-role message
+      # (user, assistant(tool_call), tool result)
+      chat.messages.size.should eq(3)
+      tool_message = chat.messages.last
+      tool_message.role.should eq(CrystalLLM::Role::Tool)
+      tool_message.content.should eq("stopped here")
+      tool_message.tool_call_id.should eq("call_h")
     end
 
     it "forwards tool_prefs to the provider on each completion" do

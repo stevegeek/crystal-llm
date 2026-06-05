@@ -6,6 +6,18 @@ require "../src/crystal_llm/facade"
 # require it here. No network: chat construction never hits the wire.
 require "../src/crystal_llm/providers/openai"
 
+# Test-support reopen: `@@logger`/`@@config` are private memoized class vars on
+# the CrystalLLM module (defined in src/crystal_llm.cr). Reopening the module here
+# (rather than editing that file) lets the logger spec reset them to nil so the
+# memoization branch (`config.logger || ::Log.for("CrystalLLM")`) can be exercised
+# deterministically regardless of what earlier specs already memoized.
+module CrystalLLM
+  def self.reset_logger_state_for_spec! : Nil
+    @@logger = nil
+    @@config = nil
+  end
+end
+
 describe "CrystalLLM facade" do
   describe ".chat" do
     it "returns a CrystalLLM::Chat for a known model (no network)" do
@@ -74,6 +86,35 @@ describe "CrystalLLM facade" do
       ctx = CrystalLLM.context
       ctx.should be_a(CrystalLLM::Context)
       ctx.config.default_model.should eq(CrystalLLM.config.default_model)
+    end
+  end
+
+  # #19: `CrystalLLM.logger` returns `config.logger` when one is set, otherwise
+  # memoizes a default `::Log.for("CrystalLLM")`. Both branches require resetting
+  # the memoized `@@logger`/`@@config` (offline; no backend wiring).
+  describe ".logger" do
+    after_each do
+      CrystalLLM.reset_logger_state_for_spec!
+      CrystalLLM.config.logger = nil
+    end
+
+    it "returns the configured logger when config.logger is set" do
+      CrystalLLM.reset_logger_state_for_spec!
+      custom = ::Log.for("CustomCrystalLLMSpecLogger")
+      CrystalLLM.config.logger = custom
+
+      CrystalLLM.logger.should be(custom)
+    end
+
+    it "memoizes a default ::Log.for(\"CrystalLLM\") when none is configured" do
+      CrystalLLM.reset_logger_state_for_spec!
+      CrystalLLM.config.logger = nil
+
+      first = CrystalLLM.logger
+      first.should be_a(::Log)
+      first.source.should eq("CrystalLLM")
+      # Memoized: the same instance is returned on subsequent calls.
+      CrystalLLM.logger.should be(first)
     end
   end
 

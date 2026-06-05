@@ -250,6 +250,41 @@ describe CrystalLLM::Providers::Azure do
     end
   end
 
+  # DIVERGENCE-PARITY: ruby_llm's Azure::Media handles only image/audio/text and
+  # raises UnsupportedAttachmentError for documents. Stock OpenAI::Media WOULD send
+  # a PDF as a `file` part, so Azure must reject PDFs and non-PDF documents.
+  describe "#format_content (document gating)" do
+    it "rejects a PDF attachment (does NOT send it as a file part)" do
+      io = IO::Memory.new
+      io.write("%PDF-1.4\n".to_slice)
+      io.rewind
+      content = CrystalLLM::Content.new("read this")
+      content.attachments << CrystalLLM::Attachment.new(io, filename: "report.pdf")
+
+      expect_raises(CrystalLLM::UnsupportedAttachmentError) do
+        configured_azure.format_content(content)
+      end
+    end
+
+    it "rejects a non-PDF document (docx) attachment" do
+      io = IO::Memory.new
+      io.write("PK\x03\x04docx-bytes".to_slice)
+      io.rewind
+      attachment = CrystalLLM::Attachment.new(io, filename: "report.docx")
+      attachment.type.should eq(:document)
+      content = CrystalLLM::Content.new("read this")
+      content.attachments << attachment
+
+      expect_raises(CrystalLLM::UnsupportedAttachmentError) do
+        configured_azure.format_content(content)
+      end
+    end
+
+    it "still passes plain text content through" do
+      configured_azure.format_content("hello").as_s.should eq("hello")
+    end
+  end
+
   describe "AAD client-credentials auth" do
     describe "api-key precedence (default path is unchanged)" do
       it "still emits the api-key header when azure_api_key is set, even with AAD config" do

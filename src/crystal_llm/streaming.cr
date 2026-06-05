@@ -20,7 +20,9 @@ module CrystalLLM
 
       url = stream_url
       # Per-request signing hook (default no-op; Bedrock computes SigV4). Caller
-      # `headers` win on conflict, matching the sync path's merge order.
+      # `headers` are merged over the signed headers here; the connection then merges
+      # PROVIDER headers last (see Connection#merge_headers), so provider/auth headers
+      # still win on conflict — matching the sync path and ruby_llm.
       signed = sign_headers("POST", url, payload).merge(headers)
       connection.post_stream(url, payload, signed) do |response|
         response.body_io.each_line do |line|
@@ -36,6 +38,10 @@ module CrystalLLM
 
             json = parse_chunk_json(data)
             next unless json
+            # ruby_llm streaming.rb: `build_chunk(data) if data.is_a?(Hash)` — only a
+            # JSON OBJECT is a valid chunk. A non-object frame (e.g. `data: true`, a
+            # bare number/string/array) must be skipped, not fed to build_chunk.
+            next unless json.as_h?
 
             chunk = build_chunk(json)
             accumulator.add(chunk)

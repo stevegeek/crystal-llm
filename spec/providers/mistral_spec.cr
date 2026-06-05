@@ -120,6 +120,34 @@ describe CrystalLLM::Providers::Mistral do
       payload["reasoning_effort"].as_s.should eq("high")
     end
 
+    it "passes reasoning_effort \"none\" through unchanged for an adjustable model" do
+      provider = configured_mistral
+      model = CrystalLLM::Model::Info.build(id: "mistral-small-latest", provider: "mistral")
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: model,
+        stream: false,
+        thinking: CrystalLLM::Thinking::Config.new(effort: "none")
+      )
+      payload["reasoning_effort"].as_s.should eq("none")
+    end
+
+    it "remaps a \"medium\" effort to \"high\" for an adjustable model" do
+      provider = configured_mistral
+      model = CrystalLLM::Model::Info.build(id: "mistral-medium-latest", provider: "mistral")
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: model,
+        stream: false,
+        thinking: CrystalLLM::Thinking::Config.new(effort: "medium")
+      )
+      payload["reasoning_effort"].as_s.should eq("high")
+    end
+
     it "uses prompt_mode reasoning for a native magistral model" do
       provider = configured_mistral
       model = CrystalLLM::Model::Info.build(id: "magistral-medium-latest", provider: "mistral")
@@ -393,6 +421,53 @@ describe CrystalLLM::Providers::Mistral do
     it "passes Mistral temperatures through unchanged" do
       provider = configured_mistral
       provider.maybe_normalize_temperature(0.3, mistral_model).should eq(0.3)
+    end
+  end
+
+  # DIVERGENCE: Mistral formats documents as {type:document_url, document_url:
+  # data-URL}, NOT OpenAI's {type:file, file:{filename, file_data}} shape.
+  describe "Media (document/image divergence)" do
+    it "formats a pdf attachment as a document_url part (data-URL)" do
+      io = IO::Memory.new
+      io.write("%PDF-1.4\n".to_slice)
+      io.rewind
+      attachment = CrystalLLM::Attachment.new(io, filename: "report.pdf")
+      attachment.pdf?.should be_true
+      content = CrystalLLM::Content.new("read this")
+      content.attachments << attachment
+
+      parts = configured_mistral.format_content(content).as_a
+      doc = parts.find! { |part| part.as_h["type"].as_s == "document_url" }.as_h
+      doc["type"].as_s.should eq("document_url")
+      doc.has_key?("file").should be_false
+      doc["document_url"].as_s.should start_with("data:application/pdf;base64,")
+    end
+
+    it "formats a non-pdf document (docx) as a document_url part" do
+      io = IO::Memory.new
+      io.write("PK\x03\x04docx-bytes".to_slice)
+      io.rewind
+      attachment = CrystalLLM::Attachment.new(io, filename: "report.docx")
+      attachment.type.should eq(:document)
+      content = CrystalLLM::Content.new("read this")
+      content.attachments << attachment
+
+      parts = configured_mistral.format_content(content).as_a
+      doc = parts.find! { |part| part.as_h["type"].as_s == "document_url" }.as_h
+      doc["document_url"].as_s.should contain(";base64,")
+    end
+
+    it "formats an image attachment with a bare image_url string (not an object)" do
+      io = IO::Memory.new
+      io.write(Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+      io.rewind
+      content = CrystalLLM::Content.new("look")
+      content.attachments << CrystalLLM::Attachment.new(io, filename: "logo.png")
+
+      parts = configured_mistral.format_content(content).as_a
+      img = parts.find! { |part| part.as_h["type"].as_s == "image_url" }.as_h
+      # bare string value, not a nested {url: ...} object
+      img["image_url"].as_s.should start_with("data:image/png;base64,")
     end
   end
 end

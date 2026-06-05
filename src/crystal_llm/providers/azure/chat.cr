@@ -26,6 +26,20 @@ module CrystalLLM
       def format_role(role : Role) : String
         role.to_s.downcase
       end
+
+      # DIVERGENCE-PARITY: ruby_llm's Azure::Media only handles image/audio/text
+      # attachments and raises UnsupportedAttachmentError for :pdf/:document (the
+      # `else` branch). Stock OpenAI::Media would happily send a PDF as a `file`
+      # part, so Azure must gate documents OFF (`document_attachments: "none"`) to
+      # reject both PDFs and non-PDF documents (docx, …). image + audio stay enabled.
+      def format_content(content : String | Content | Content::Raw | Nil) : JSON::Any
+        Media.format_content(
+          content,
+          document_attachments: "none",
+          image_attachments: true,
+          audio_attachments: true
+        )
+      end
     end
   end
 end

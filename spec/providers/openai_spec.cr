@@ -265,6 +265,27 @@ describe CrystalLLM::Providers::OpenAI do
       fn["description"].as_s.should eq("Search the web")
       fn["parameters"].as_h["type"].as_s.should eq("object")
     end
+
+    # A Google thought_signature rides on extra_content.google.thought_signature in
+    # the OpenAI tool_call wire shape (format_tool_calls writes it; parse_tool_calls
+    # reads it back). This asserts the full format -> parse round-trip.
+    it "round-trips a Google thought_signature under extra_content.google" do
+      provider = configured_openai
+      call = CrystalLLM::ToolCall.new(
+        id: "call_1", name: "search",
+        arguments: {"q" => JSON::Any.new("crystal")} of String => JSON::Any,
+        thought_signature: "sig-abc-123"
+      )
+
+      formatted = provider.format_tool_calls({"call_1" => call})
+      raise "expected formatted tool_calls" if formatted.nil?
+      wire = formatted.as_a[0].as_h
+      wire.dig("extra_content", "google", "thought_signature").as_s.should eq("sig-abc-123")
+
+      reparsed = provider.parse_tool_calls(formatted)
+      raise "expected parsed tool_calls" if reparsed.nil?
+      reparsed["call_1"].thought_signature.should eq("sig-abc-123")
+    end
   end
 
   describe "Capabilities" do

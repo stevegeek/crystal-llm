@@ -365,4 +365,39 @@ describe "CrystalLLM::Providers::OpenAI media" do
       part.path.ends_with?("a.mp3").should be_true
     end
   end
+
+  describe "Media document_attachments \"all\"" do
+    it "serializes a docx to {type:file, file:{filename, file_data: data-URL}}" do
+      io = IO::Memory.new
+      io.write("PK\x03\x04docx-bytes".to_slice)
+      io.rewind
+      attachment = CrystalLLM::Attachment.new(io, filename: "report.docx")
+      attachment.type.should eq(:document)
+      content = CrystalLLM::Content.new("read this")
+      content.attachments << attachment
+
+      parts = CrystalLLM::Providers::OpenAI::Media.format_content(
+        content, document_attachments: "all"
+      ).as_a
+      file_part = parts.find! { |part| part.as_h["type"].as_s == "file" }.as_h
+      file_part["type"].as_s.should eq("file")
+      file = file_part["file"].as_h
+      file["filename"].as_s.should eq("report.docx")
+      file["file_data"].as_s.should start_with(
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,"
+      )
+    end
+
+    it "rejects a docx under the default \"pdf\" strategy" do
+      io = IO::Memory.new
+      io.write("PK\x03\x04docx-bytes".to_slice)
+      io.rewind
+      content = CrystalLLM::Content.new("read this")
+      content.attachments << CrystalLLM::Attachment.new(io, filename: "report.docx")
+
+      expect_raises(CrystalLLM::UnsupportedAttachmentError) do
+        CrystalLLM::Providers::OpenAI::Media.format_content(content)
+      end
+    end
+  end
 end

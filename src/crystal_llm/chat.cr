@@ -152,23 +152,26 @@ module CrystalLLM
     # ---- Asking ------------------------------------------------------------
 
     # Adds a user message and runs a completion (sync). `with` carries attachments.
-    def ask(message : String? = nil, with attachments : Attachable? = nil) : Message
+    # Returns the assistant `Message`, OR a `Tool::Halt` when a tool halted the
+    # conversation (mirrors ruby_llm, where `handle_tool_calls` returns the
+    # `Tool::Halt` result rather than running a follow-up completion).
+    def ask(message : String? = nil, with attachments : Attachable? = nil) : Message | Tool::Halt
       add_message(role: Role::User, content: build_content(message, attachments))
       complete
     end
 
     # Streaming overload: yields each Chunk to the block.
-    def ask(message : String? = nil, with attachments : Attachable? = nil, &block : CrystalLLM::Chunk ->) : Message
+    def ask(message : String? = nil, with attachments : Attachable? = nil, &block : CrystalLLM::Chunk ->) : Message | Tool::Halt
       add_message(role: Role::User, content: build_content(message, attachments))
       complete(&block)
     end
 
     # `say` is an alias for `ask` (ruby_llm: `alias say ask`).
-    def say(message : String? = nil, with attachments : Attachable? = nil) : Message
+    def say(message : String? = nil, with attachments : Attachable? = nil) : Message | Tool::Halt
       ask(message, with: attachments)
     end
 
-    def say(message : String? = nil, with attachments : Attachable? = nil, &block : CrystalLLM::Chunk ->) : Message
+    def say(message : String? = nil, with attachments : Attachable? = nil, &block : CrystalLLM::Chunk ->) : Message | Tool::Halt
       ask(message, with: attachments, &block)
     end
 
@@ -310,7 +313,15 @@ module CrystalLLM
     # The assistant message content is a JSON String (the schema constrains the
     # provider to emit one); `T.from_json` does the authoritative typing.
     def ask_as(message : String?, klass : T.class, with attachments : Attachable? = nil) : T forall T
-      content = with_schema(klass).ask(message, with: attachments).content
+      response = with_schema(klass).ask(message, with: attachments)
+      # A schema-constrained ask returns a Message; a Tool::Halt has no JSON content
+      # to deserialize (no tools are registered on this path, but guard regardless).
+      unless response.is_a?(Message)
+        raise SchemaResponseError.new(
+          "ask_as(#{T}) expected a Message response, got #{response.class}"
+        )
+      end
+      content = response.content
       unless content.is_a?(String)
         raise SchemaResponseError.new(
           "ask_as(#{T}) expected a String JSON response, got #{content.class}"
@@ -489,13 +500,13 @@ module CrystalLLM
 
     # ---- Completion (sync) -------------------------------------------------
 
-    def complete : Message
+    def complete : Message | Tool::Halt
       instrument_completion(streaming: false) { complete_once }
     end
 
     # ---- Completion (streaming) --------------------------------------------
 
-    def complete(&block : CrystalLLM::Chunk ->) : Message
+    def complete(&block : CrystalLLM::Chunk ->) : Message | Tool::Halt
       instrument_completion(streaming: true) { complete_once(&block) }
     end
 
@@ -505,21 +516,26 @@ module CrystalLLM
     # the same event — mirroring ruby_llm's `instrument_completion`. When no
     # instrumenter is configured this is a transparent no-op: the block runs and its
     # result is returned untouched.
-    private def instrument_completion(streaming : Bool, &block : -> Message) : Message
+    private def instrument_completion(streaming : Bool, &block : -> (Message | Tool::Halt)) : Message | Tool::Halt
       payload = build_chat_payload(streaming)
       CrystalLLM.instrument("chat.crystal_llm", payload, config: @config) do |event|
         result = block.call
         event["response"] = result
         event["messages_after"] = @messages.dup
-        event["response_role"] = result.role.to_s
-        event["response_model"] = result.model_id
-        event["tool_call"] = result.tool_call?
-        event["tool_calls"] = result.tool_calls
-        event["input_tokens"] = result.input_tokens
-        event["output_tokens"] = result.output_tokens
-        event["cached_tokens"] = result.cached_tokens
-        event["cache_creation_tokens"] = result.cache_creation_tokens
-        event["thinking_tokens"] = result.thinking_tokens
+        # ruby_llm guards the response-side Message keys with
+        # `if result.respond_to?(:tool_call?)` — a `Tool::Halt` result has none of
+        # them. The port mirrors that: only a `Message` carries role/tokens/etc.
+        if result.is_a?(Message)
+          event["response_role"] = result.role.to_s
+          event["response_model"] = result.model_id
+          event["tool_call"] = result.tool_call?
+          event["tool_calls"] = result.tool_calls
+          event["input_tokens"] = result.input_tokens
+          event["output_tokens"] = result.output_tokens
+          event["cached_tokens"] = result.cached_tokens
+          event["cache_creation_tokens"] = result.cache_creation_tokens
+          event["thinking_tokens"] = result.thinking_tokens
+        end
         result
       end
     end
@@ -552,7 +568,7 @@ module CrystalLLM
       Cost.aggregate(@messages.map(&.cost.as(Cost?)))
     end
 
-    private def complete_once : Message
+    private def complete_once : Message | Tool::Halt
       response = @provider.complete(
         @messages,
         tools: @tools,
@@ -577,7 +593,7 @@ module CrystalLLM
       end
     end
 
-    private def complete_once(&block : CrystalLLM::Chunk ->) : Message
+    private def complete_once(&block : CrystalLLM::Chunk ->) : Message | Tool::Halt
       run_message_callbacks("before_message", nil)
 
       response = @provider.complete(
@@ -606,31 +622,35 @@ module CrystalLLM
 
     # ---- Tool-call loop ----------------------------------------------------
 
-    private def handle_tool_calls(response : Message) : Message
+    private def handle_tool_calls(response : Message) : Message | Tool::Halt
       halt_result = run_tool_calls(response)
       reset_tool_choice if forced_tool_choice?
-      if halt_message = halt_result
-        halt_message
+      # ruby_llm: `halt_result || complete(&)` — return the Tool::Halt result
+      # itself (no follow-up completion) when a tool halted, else continue the loop.
+      if halt = halt_result
+        halt
       else
         complete
       end
     end
 
-    private def handle_tool_calls(response : Message, &block : CrystalLLM::Chunk ->) : Message
+    private def handle_tool_calls(response : Message, &block : CrystalLLM::Chunk ->) : Message | Tool::Halt
       halt_result = run_tool_calls(response)
       reset_tool_choice if forced_tool_choice?
-      if halt_message = halt_result
-        halt_message
+      if halt = halt_result
+        halt
       else
         complete(&block)
       end
     end
 
     # Executes each tool call in the response, appending a tool-role result
-    # message for each. Returns the halt Message if a tool requested a halt,
-    # else nil (signalling the loop should continue to another completion).
-    private def run_tool_calls(response : Message) : Message?
-      halt_message : Message? = nil
+    # message for each. Returns the `Tool::Halt` result if a tool requested a halt
+    # (mirroring ruby_llm's `halt_result = result`), else nil (signalling the loop
+    # should continue to another completion). The halt content is STILL appended as
+    # a tool-role message before returning.
+    private def run_tool_calls(response : Message) : Tool::Halt?
+      halt_result : Tool::Halt? = nil
       tool_calls = response.tool_calls
       return nil unless tool_calls
 
@@ -650,10 +670,10 @@ module CrystalLLM
         message = add_message(role: Role::Tool, content: content, tool_call_id: tool_call.id)
         run_message_callbacks("after_message", message)
 
-        halt_message = message if result.is_a?(Tool::Halt)
+        halt_result = result if result.is_a?(Tool::Halt)
       end
 
-      halt_message
+      halt_result
     end
 
     private def execute_tool(tool_call : ToolCall) : ToolResult

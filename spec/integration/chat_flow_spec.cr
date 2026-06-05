@@ -96,7 +96,7 @@ describe "offline chat flow (integration)" do
       chat, stub = stubbed_chat("gpt-4o", "openai")
       stub.stub_response(openai_text_response("hello from the stub"))
 
-      response = chat.ask("hi")
+      response = chat.ask("hi").as(CrystalLLM::Message)
 
       response.role.should eq(CrystalLLM::Role::Assistant)
       response.content.should eq("hello from the stub")
@@ -126,7 +126,7 @@ describe "offline chat flow (integration)" do
       stub.stub_response(openai_tool_call_response("call_1", "flow_echo", %({"word":"pong"})))
       stub.stub_response(openai_text_response("the tool said pong"))
 
-      response = chat.ask("echo pong please")
+      response = chat.ask("echo pong please").as(CrystalLLM::Message)
 
       FlowEchoTool.ran.should be_true
       FlowEchoTool.last_word.should eq("pong")
@@ -166,7 +166,7 @@ describe "offline chat flow (integration)" do
       final = chat.ask("stream please") do |chunk|
         c = chunk.content
         observed << c if c.is_a?(String)
-      end
+      end.as(CrystalLLM::Message)
 
       observed.should eq(["Hel", "lo!"])
       final.content.should eq("Hello!")
@@ -195,7 +195,7 @@ describe "offline chat flow (integration)" do
 
       stub.stub_response(openai_text_response(%({"name":"Ada"})))
 
-      response = chat.ask("who?")
+      response = chat.ask("who?").as(CrystalLLM::Message)
 
       # the schema envelope reached the wire as a json_schema response_format
       sent = JSON.parse(stub.posts.first[1])
@@ -210,12 +210,69 @@ describe "offline chat flow (integration)" do
     end
   end
 
+  # #4: Chat#with_params deep-merges caller-supplied provider options INTO the
+  # rendered outgoing payload (via Utils.deep_merge in the completion pipeline).
+  describe "(e) with_params deep-merges provider options into the payload" do
+    it "merges a top-level response_format json_object into the request" do
+      chat, stub = stubbed_chat("gpt-4o", "openai")
+      chat.with_params({
+        "response_format" => JSON::Any.new({"type" => JSON::Any.new("json_object")} of String => JSON::Any),
+      } of String => JSON::Any)
+
+      stub.stub_response(openai_text_response(%({"ok":true})))
+
+      chat.ask("give me json")
+
+      sent = JSON.parse(stub.posts.first[1])
+      # the caller's params reached the wire merged over the rendered payload
+      sent.dig("response_format", "type").as_s.should eq("json_object")
+      # the base payload keys are still present (merge, not replace)
+      sent["model"].as_s.should eq("gpt-4o")
+      sent["messages"].as_a.size.should be >= 1
+    end
+
+    it "deep-merges nested params: nesting is preserved and the caller value wins" do
+      chat, stub = stubbed_chat("gpt-4o", "openai")
+
+      # The schema makes the provider render `response_format` as a NESTED object:
+      #   { "type" => "json_schema", "json_schema" => { ... } }
+      raw_schema = {
+        "name"   => JSON::Any.new("person"),
+        "schema" => JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any),
+      } of String => JSON::Any
+      chat.with_schema(raw_schema)
+
+      # The caller overrides ONE nested leaf (`type`) and adds a sibling (`extra`).
+      # deep_merge must: keep the payload's `json_schema` sub-object, override
+      # `type` with the caller value, and add `extra`.
+      chat.with_params({
+        "response_format" => JSON::Any.new({
+          "type"  => JSON::Any.new("json_object"),
+          "extra" => JSON::Any.new("from_caller"),
+        } of String => JSON::Any),
+      } of String => JSON::Any)
+
+      stub.stub_response(openai_text_response(%({"name":"Ada"})))
+
+      chat.ask("who?")
+
+      sent = JSON.parse(stub.posts.first[1])
+      rf = sent["response_format"]
+      # caller value wins on the overlapping leaf
+      rf["type"].as_s.should eq("json_object")
+      # the caller-added sibling is present
+      rf["extra"].as_s.should eq("from_caller")
+      # the payload's nested sub-object survived the merge (deep, not shallow)
+      rf["json_schema"].as_h["name"].as_s.should eq("person")
+    end
+  end
+
   describe "Anthropic text completion (multi-format wiring)" do
     it "ask returns an assistant Message from the Anthropic Messages-API shape" do
       chat, stub = stubbed_chat("claude-sonnet-4", "anthropic")
       stub.stub_response(anthropic_text_response("bonjour"))
 
-      response = chat.ask("salut")
+      response = chat.ask("salut").as(CrystalLLM::Message)
 
       response.role.should eq(CrystalLLM::Role::Assistant)
       response.content.should eq("bonjour")

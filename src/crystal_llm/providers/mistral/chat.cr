@@ -59,13 +59,82 @@ module CrystalLLM
       # assistant message carries thinking. Mirrors ruby_llm's
       # `format_content_with_thinking` (+ `build_thinking_blocks`).
       def format_content_with_thinking(msg : Message) : JSON::Any
-        formatted = Media.format_content(msg.content)
+        formatted = format_content(msg.content)
         thinking = msg.thinking
         return formatted unless msg.role.assistant? && thinking
 
         blocks = build_thinking_blocks(thinking)
         append_formatted_content(blocks, formatted)
         JSON::Any.new(blocks)
+      end
+
+      # DIVERGENCE: Mistral diverges from OpenAI's media part shapes:
+      #   image -> {type:"image_url", image_url: <data-or-source-URL string>}
+      #            (bare string, NOT OpenAI's nested {image_url:{url:...}} object)
+      #   pdf/document -> {type:"document_url", document_url: <data-or-source-URL>}
+      #            (OpenAI uses a `file` part with {filename, file_data})
+      # audio / text-file parts reuse OpenAI::Media's shapes (Mistral does likewise).
+      # Mirrors ruby_llm Mistral::Media#format_content. Defined on the provider (not
+      # a nested `Media` module) because `Mistral::Media` would resolve to the
+      # inherited `OpenAI::Media` constant and silently monkeypatch it.
+      def format_content(content : String | Content | Content::Raw | Nil) : JSON::Any
+        case content
+        when Content::Raw
+          content.value
+        when Nil
+          JSON::Any.new(nil)
+        when String
+          JSON::Any.new(content)
+        when Content
+          format_mistral_rich_content(content)
+        else
+          JSON::Any.new(content.to_s)
+        end
+      end
+
+      # Mistral image part: a bare URL/data-URL string (vs OpenAI's nested object).
+      def format_mistral_image(image : Attachment) : JSON::Any
+        url = image.url? ? image.source.to_s : image.for_llm
+        JSON::Any.new({
+          "type"      => JSON::Any.new("image_url"),
+          "image_url" => JSON::Any.new(url),
+        } of String => JSON::Any)
+      end
+
+      # Mistral document part: `{type:document_url, document_url: <url-or-data>}`.
+      # PDFs and other documents both route here.
+      def format_mistral_document(document : Attachment) : JSON::Any
+        url = document.url? ? document.source.to_s : document.for_llm
+        JSON::Any.new({
+          "type"         => JSON::Any.new("document_url"),
+          "document_url" => JSON::Any.new(url),
+        } of String => JSON::Any)
+      end
+
+      private def format_mistral_rich_content(content : Content) : JSON::Any
+        if content.attachments.empty?
+          return JSON::Any.new(content.text)
+        end
+
+        parts = [] of JSON::Any
+        if text = content.text
+          parts << OpenAI::Media.format_text(text)
+        end
+        content.attachments.each do |attachment|
+          case attachment.type
+          when :image
+            parts << format_mistral_image(attachment)
+          when :audio
+            parts << OpenAI::Media.format_audio(attachment)
+          when :pdf, :document
+            parts << format_mistral_document(attachment)
+          when :text
+            parts << OpenAI::Media.format_text_file(attachment)
+          else
+            raise UnsupportedAttachmentError.new(attachment.mime_type)
+          end
+        end
+        JSON::Any.new(parts)
       end
 
       # A Mistral thinking content block: text -> `{type: thinking, thinking: [{type:

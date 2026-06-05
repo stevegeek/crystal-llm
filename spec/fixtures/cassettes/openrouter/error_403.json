@@ -1,0 +1,10 @@
+{
+  "error": {
+    "message": "Provider returned error",
+    "code": 403,
+    "metadata": {
+      "provider_name": "Anthropic",
+      "raw": "{\"type\":\"error\",\"error\":{\"type\":\"permission_error\",\"message\":\"Your credit balance is too low to access the Anthropic API.\"}}"
+    }
+  }
+}

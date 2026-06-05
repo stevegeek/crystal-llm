@@ -1,4 +1,5 @@
 require "./spec_helper"
+require "http/server"
 
 # Ports the instrumentation behaviour (ruby_llm's Instrumentation module +
 # instrument_completion / execute_tool instrumentation). No live network: a fully
@@ -101,6 +102,56 @@ end
 private def fetch_event(recorder : RecordingInstrumenter,
                         name : String) : CrystalLLM::Instrumentation::Payload
   recorder.event(name) || fail("expected a #{name.inspect} event to have been emitted")
+end
+
+# A fake embedding provider for the `embedding.crystal_llm` event test. Implements
+# the three embed hooks against a local in-process HTTP server (no live network):
+# `embedding_url` returns the server URL, so the real `Provider#embed` pipeline
+# (render -> POST -> parse) runs and the instrumentation wrapping is exercised
+# end-to-end. The server returns a fixed two-vector batch so the response-side
+# `embedding_dimensions`/`embedding_count` keys are deterministic.
+class InstrumentationEmbedProvider < CrystalLLM::Provider
+  class_property embed_url : String = ""
+
+  def self.configuration_requirements : Array(String)
+    [] of String
+  end
+
+  def api_base : String
+    self.class.embed_url
+  end
+
+  def embedding_url(model : String) : String
+    self.class.embed_url
+  end
+
+  def render_embedding_payload(text : CrystalLLM::Provider::TextInput, model : String,
+                               dimensions : Int32?) : Hash(String, JSON::Any)
+    {"model" => JSON::Any.new(model)}
+  end
+
+  def parse_embedding_response(response : Crest::Response, model : String,
+                               text : CrystalLLM::Provider::TextInput) : CrystalLLM::Embedding
+    data = JSON.parse(response.body)["data"].as_a
+    rows = data.map { |row| row["embedding"].as_a.map(&.as_f) }
+    # Mirror real providers' shape polymorphism: a single-string input yields a
+    # flat vector; an Array input keeps the nested batch shape.
+    vectors = text.is_a?(String) ? rows.first : rows
+    CrystalLLM::Embedding.new(vectors: vectors, model: model, input_tokens: 5)
+  end
+end
+
+CrystalLLM::Provider.register("instrumentation_embed", InstrumentationEmbedProvider)
+
+private def seed_embed_fake_model : Nil
+  return if CrystalLLM::Models.instance.all.any?(&.id.== "instrumentation-embed-model")
+  info = CrystalLLM::Model::Info.new(JSON.parse({
+    "id"       => "instrumentation-embed-model",
+    "name"     => "Instrumentation Embed",
+    "provider" => "instrumentation_embed",
+    "type"     => "embedding",
+  }.to_json).as_h)
+  CrystalLLM::Models.instance.all << info
 end
 
 describe CrystalLLM::Instrumentation do
@@ -244,6 +295,63 @@ describe CrystalLLM::Instrumentation do
       result.should eq(99)
       event = fetch_event(recorder, "custom.crystal_llm")
       event["extra"].should eq("added")
+    end
+  end
+
+  # #21: the embed pipeline emits an `embedding.crystal_llm` event mirroring
+  # `chat.crystal_llm` (provider/model/input request-side; embedding_dimensions/
+  # embedding_count response-side). ruby_llm has no embed instrumentation — this is
+  # a deferred-divergence IMPL added for parity.
+  describe "embedding.crystal_llm event" do
+    it "emits an embedding event with request + response payload keys" do
+      server = HTTP::Server.new do |context|
+        context.response.content_type = "application/json"
+        context.response.print(
+          {"data" => [
+            {"embedding" => [0.1, 0.2, 0.3]},
+            {"embedding" => [0.4, 0.5, 0.6]},
+          ]}.to_json
+        )
+      end
+      address = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      begin
+        InstrumentationEmbedProvider.embed_url = "http://#{address.address}:#{address.port}/embeddings"
+        seed_embed_fake_model
+        recorder = RecordingInstrumenter.new
+        CrystalLLM.config.instrumenter = recorder
+
+        embedding = CrystalLLM.embed(["a", "b"], model: "instrumentation-embed-model")
+        embedding.should be_a(CrystalLLM::Embedding)
+
+        event = fetch_event(recorder, "embedding.crystal_llm")
+        event["provider"].should eq("instrumentationembedprovider")
+        event["model"].should eq("instrumentation-embed-model")
+        event["input"].as(Array(String)).should eq(["a", "b"])
+        event["embedding_dimensions"].should eq(3)
+        event["embedding_count"].should eq(2)
+      ensure
+        server.close
+      end
+    end
+
+    it "is a transparent no-op when no instrumenter is configured" do
+      server = HTTP::Server.new do |context|
+        context.response.content_type = "application/json"
+        context.response.print({"data" => [{"embedding" => [0.7, 0.8]}]}.to_json)
+      end
+      address = server.bind_tcp("127.0.0.1", 0)
+      spawn { server.listen }
+      begin
+        InstrumentationEmbedProvider.embed_url = "http://#{address.address}:#{address.port}/embeddings"
+        seed_embed_fake_model
+        CrystalLLM.config.instrumenter.should be_nil
+
+        embedding = CrystalLLM.embed("solo", model: "instrumentation-embed-model")
+        embedding.vectors.should eq([0.7, 0.8])
+      ensure
+        server.close
+      end
     end
   end
 

@@ -54,7 +54,7 @@ module CrystalLLM
 
     # Streaming POST: yields the crest response so the caller can read body_io.
     def post_stream(url : String, payload : String, headers : Hash(String, String) = {} of String => String, &block : Crest::Response ->) : Nil
-      hdrs = provider_headers.merge(headers)
+      hdrs = merge_headers(headers)
       begin
         Crest.post(full_url(url), payload, headers: hdrs, json: false, read_timeout: @config.request_timeout.seconds) do |response|
           block.call(response)
@@ -67,7 +67,7 @@ module CrystalLLM
     end
 
     private def request(method : Symbol, url : String, payload : String?, headers : Hash(String, String)) : Crest::Response
-      hdrs = provider_headers.merge(headers)
+      hdrs = merge_headers(headers)
       begin
         case method
         when :get
@@ -83,7 +83,7 @@ module CrystalLLM
     private def multipart_request(url : String,
                                   form : Hash(String, Crest::ParamsValue),
                                   headers : Hash(String, String)) : Crest::Response
-      hdrs = provider_headers.merge(headers)
+      hdrs = merge_headers(headers)
       begin
         # `multipart: true` forces a multipart body even if no value is an IO
         # (so a fields-only edit form still posts as form-data, matching ruby_llm).
@@ -124,7 +124,11 @@ module CrystalLLM
     # A bounded, dependency-free jitter in [0, 1) (Random is unavailable in some
     # contexts; the exact value is unimportant — only that retries are spread).
     private def deterministic_jitter(attempt : Int32) : Float64
-      ((attempt * 2654435761_u32) % 1000) / 1000.0
+      # `&*` is the WRAPPING multiply: `attempt.to_u32 * 2654435761` overflows UInt32
+      # for attempt >= 2 (the product exceeds UInt32::MAX), which would raise
+      # OverflowError under Crystal's checked arithmetic. Wrapping is exactly the
+      # intent here — a Knuth-multiplicative hash spread into [0, 1) via `% 1000`.
+      ((attempt.to_u32 &* 2654435761_u32) % 1000) / 1000.0
     end
 
     # Wraps a request in a `request.crystal_llm` instrumentation event (ruby_llm's
@@ -152,6 +156,17 @@ module CrystalLLM
 
     private def provider_headers : Hash(String, String)
       @provider.headers
+    end
+
+    # Merges caller *headers* with the provider's headers, with PROVIDER headers
+    # winning on a key collision. This mirrors ruby_llm's connection.rb, where each
+    # request does `req.headers.merge! provider_headers` — i.e. provider/auth headers
+    # are applied LAST and override any caller value. The precedence matters for
+    # security: a caller using `with_headers` must not be able to clobber the
+    # provider's Authorization/api-key header. (Earlier this port merged the other
+    # way — `provider_headers.merge(headers)` — letting callers override auth.)
+    private def merge_headers(headers : Hash(String, String)) : Hash(String, String)
+      headers.merge(provider_headers)
     end
 
     private def full_url(url : String) : String

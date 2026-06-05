@@ -10,11 +10,9 @@
 # - The Embeddings mixin (mistral/embeddings.rb) IS ported — see mistral/embeddings.cr
 #   (it feeds the provider_media.cr embed pipeline). Image/moderation/transcription
 #   are not offered by Mistral.
-# - Mistral has no dedicated Media mixin here: it inherits OpenAI's media formatting
-#   (mistral/media.rb is not separately ported). Note Mistral upstream uses a
-#   `document_url` part type (vs OpenAI's `file`) for pdf/document attachments —
-#   the inherited OpenAI Media uses the `file` shape; reproduce `document_url` if a
-#   Mistral-specific media override is added later.
+# - Mistral has a dedicated Media module (mistral/media.cr): images use a bare
+#   `image_url` string and pdf/document attachments use Mistral's `document_url`
+#   part type (vs OpenAI's `file` shape). audio/text-file parts reuse OpenAI::Media.
 # - Assistant thinking-block injection in format_messages IS ported (reads
 #   Message#thinking — see mistral/chat.cr), as is the thinking *payload* shaping.
 # - Hard auth: only the `Bearer #{mistral_api_key}` header is wired; no API-key

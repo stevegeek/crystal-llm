@@ -273,6 +273,29 @@ module CrystalLLM
       ensure
         Models.reset!
       end
+
+      # models.dev created_at precedence: release_date wins; else last_updated;
+      # else nil (mirrors ruby_llm's `[release_date, last_updated].find(present?)`).
+      it "derives created_at with release_date > last_updated > nil precedence" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.refresh!
+
+        # gpt-test-mini has BOTH release_date (2025-01-15) and last_updated
+        # (2025-02-01) — release_date wins.
+        with_both = Models.find("gpt-test-mini", "openai")
+        created = with_both.created_at
+        created.should_not be_nil
+        created.try(&.to_s("%Y-%m-%d")).should eq("2025-01-15")
+
+        # claude-test has ONLY last_updated (2025-03-10) — it is used.
+        only_updated = Models.find("claude-test", "anthropic")
+        only_updated.created_at.try(&.to_s("%Y-%m-%d")).should eq("2025-03-10")
+
+        # text-embedding-test has NEITHER — created_at is nil.
+        Models.find("text-embedding-test", "openai").created_at.should be_nil
+      ensure
+        Models.reset!
+      end
     end
 
     describe "#save_to_json / round-trip" do

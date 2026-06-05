@@ -133,6 +133,31 @@ module SchemaSpecHelpers
       end
     end
   end
+
+  # `strict false` must still emit `"strict": false` (regression: a truthiness
+  # check would drop the key because `false` is falsy).
+  class StrictFalse < CrystalLLM::Schema
+    strict false
+    string "x"
+  end
+
+  # `strict nil` omits the key entirely (mirrors Ruby's `unless strict.nil?`).
+  class StrictNil < CrystalLLM::Schema
+    strict nil
+    string "x"
+  end
+
+  # `additional_properties true` must be emittable as `additionalProperties: true`.
+  class AdditionalPropsTrue < CrystalLLM::Schema
+    additional_properties true
+    string "x"
+  end
+
+  # Used to exercise the invalid-`of:` array-type guard at call time (a class-body
+  # raise would abort program init).
+  class BadArray < CrystalLLM::Schema
+    string "x"
+  end
 end
 
 describe CrystalLLM::Schema do
@@ -366,6 +391,41 @@ describe CrystalLLM::Schema do
     it "raises when given has no conditions" do
       expect_raises(CrystalLLM::Schema::InvalidSchemaError, /at least one/) do
         SchemaSpecHelpers::EmptyGiven.given({} of String => JSON::Any) { |_c| }
+      end
+    end
+  end
+
+  # Parity with ruby_llm-schema's strict_spec.rb: `strict` is emitted unless nil,
+  # so `false` must survive as `"strict": false` (regression — a truthy check
+  # dropped it). `additional_properties true` must emit `true`.
+  describe "strict / additionalProperties emission" do
+    it "emits strict: false when set to false (does not drop the key)" do
+      schema = SchemaSpecHelpers::StrictFalse.new("s").to_json_schema["schema"].as_h
+      schema.has_key?("strict").should be_true
+      schema["strict"].should eq(JSON::Any.new(false))
+
+      json = SchemaSpecHelpers::StrictFalse.new("s").to_json
+      json.should contain(%("strict":false))
+    end
+
+    it "omits strict from output when set to nil" do
+      schema = SchemaSpecHelpers::StrictNil.new("s").to_json_schema["schema"].as_h
+      schema.has_key?("strict").should be_false
+    end
+
+    it "emits additionalProperties: true when set to true" do
+      schema = SchemaSpecHelpers::AdditionalPropsTrue.new("a").to_json_schema["schema"].as_h
+      schema["additionalProperties"].should eq(JSON::Any.new(true))
+    end
+  end
+
+  # Parity with ruby_llm-schema's error_handling_spec.rb: an invalid `of:` array
+  # item type raises InvalidArrayTypeError with a descriptive message. Exercised
+  # at call time so a class-body raise does not abort program init.
+  describe "invalid array item type" do
+    it "raises InvalidArrayTypeError with a descriptive message for a non-primitive `of:`" do
+      expect_raises(CrystalLLM::Schema::InvalidArrayTypeError, /Invalid array type: :not_a_type.*primitive/) do
+        SchemaSpecHelpers::BadArray.array("items", of: :not_a_type)
       end
     end
   end
