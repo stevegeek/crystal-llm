@@ -38,13 +38,24 @@ module CrystalLLM
   # * `Schema.create(&block)` (anonymous runtime class generation) is dropped:
   #   Crystal cannot synthesize a class at runtime. Define a named subclass.
   #
-  # == Deferred (faithful port, later phase) ==
+  # == Now ported (this phase, PORTING.md #9) ==
   #
-  # * The runtime validator (`validate!` / `valid?` / `Validator`).
-  # * Conditionals: `any_of` / `one_of` / `requires` / `optional` / `given` /
-  #   `dependent` and the `allOf` / `dependentRequired` / `dependentSchemas` output.
-  # * `$defs` / references: `define` / `reference` and the `$ref` machinery.
-  # These are noted at their call sites; they are not stubbed to fake behaviour.
+  # * Composition: `any_of(name, &block)`, `one_of(name, &block)`,
+  #   `optional(name, &block)` (= `any_of` with a trailing `null`). The block
+  #   takes an explicit member builder (`|m|`) collecting alternative schemas
+  #   into `anyOf` / `oneOf` (Crystal divergence — Ruby uses an `instance_eval`
+  #   context that resolves bare method calls).
+  # * `$defs` / references: `define(name) { |d| ... }` adds a named definition to
+  #   `$defs`; `reference(name)` yields `{"$ref" => "#/$defs/name"}` (and
+  #   `reference(:root)` / `reference("#")` yields `{"$ref" => "#"}`).
+  # * The runtime validator (`validate!` / `valid?`): a faithful port of
+  #   `validator.rb` — DFS-based circular-reference detection over `$defs`. The
+  #   `to_json_schema` / `to_json` entry points run `validate!` first, as Ruby does.
+  #
+  # == Still deferred (faithful port, later phase) ==
+  #
+  # * Conditionals: `requires` / `given` / `dependent` and the `allOf` /
+  #   `dependentRequired` / `dependentSchemas` output. (Out of scope here.)
   class Schema
     # Per-subclass DSL state. Class variables are isolated per subclass in
     # Crystal; `macro inherited` re-initializes them so each subclass starts clean.
@@ -53,6 +64,7 @@ module CrystalLLM
     @@description : String? = nil
     @@additional_properties = false
     @@strict : Bool? = true
+    @@definitions = {} of String => JSON::Any
 
     macro inherited
       @@builder = Builder.new
@@ -60,6 +72,7 @@ module CrystalLLM
       @@description = nil
       @@additional_properties = false
       @@strict = true
+      @@definitions = {} of String => JSON::Any
     end
 
     # The accumulated properties for this schema class.
@@ -165,6 +178,72 @@ module CrystalLLM
         min_items: min_items, max_items: max_items)
     end
 
+    # --- Composition DSL (class-body) ---------------------------------------
+
+    # `any_of`: the value validates against AT LEAST ONE member schema. The block
+    # receives a member builder; each `m.string` / `m.object { ... }` /
+    # `m.reference(...)` appends an alternative to the `anyOf` list.
+    def self.any_of(name : String, description : String? = nil, required : Bool = true,
+                    &block : MemberBuilder ->) : Nil
+      @@builder.any_of(name, description: description, required: required, &block)
+    end
+
+    # `one_of`: the value validates against EXACTLY ONE member schema.
+    def self.one_of(name : String, description : String? = nil, required : Bool = true,
+                    &block : MemberBuilder ->) : Nil
+      @@builder.one_of(name, description: description, required: required, &block)
+    end
+
+    # `optional`: sugar for `any_of` whose members are the block's members plus a
+    # trailing `null` (mirrors the Ruby gem). Always emitted as required so the
+    # key must be present, but may be null.
+    def self.optional(name : String, description : String? = nil, &block : MemberBuilder ->) : Nil
+      @@builder.optional(name, description: description, &block)
+    end
+
+    # --- Definitions / references DSL (class-body) --------------------------
+
+    # `define`: register a reusable named object schema under `$defs`. The block
+    # builds the object's properties (and may itself use `reference`).
+    def self.define(name : String, description : String? = nil, &block : Builder ->) : Nil
+      nested = Builder.new
+      block.call(nested)
+      schema = {} of String => JSON::Any
+      schema["type"] = JSON::Any.new("object")
+      schema["properties"] = JSON::Any.new(nested.properties)
+      schema["required"] = JSON::Any.new(nested.required.map { |req| JSON::Any.new(req) })
+      schema["additionalProperties"] = JSON::Any.new(false)
+      schema["description"] = JSON::Any.new(description) if description
+      @@definitions[name] = JSON::Any.new(schema)
+    end
+
+    # The accumulated `$defs` definitions for this schema class.
+    def self.definitions : Hash(String, JSON::Any)
+      @@definitions
+    end
+
+    # `reference`: a `$ref` pointer. `reference(:root)` / `reference("#")` points
+    # at the document root; any other name points at `#/$defs/<name>`.
+    def self.reference(name : String) : Hash(String, JSON::Any)
+      if name == "#" || name == "root"
+        {"$ref" => JSON::Any.new("#")}
+      else
+        {"$ref" => JSON::Any.new("#/$defs/#{name}")}
+      end
+    end
+
+    # --- Validation ----------------------------------------------------------
+
+    # Run structural validation (currently: circular-reference detection over
+    # `$defs`). Raises `ValidationError` on a cycle. Mirrors `validator.rb`.
+    def self.validate! : Nil
+      Validator.new(definitions).validate!
+    end
+
+    def self.valid? : Bool
+      Validator.new(definitions).valid?
+    end
+
     # --- Instance side -------------------------------------------------------
 
     getter name : String
@@ -175,12 +254,26 @@ module CrystalLLM
       @instance_description = description
     end
 
+    # Run structural validation for this schema (delegates to the class). Mirrors
+    # the Ruby gem's instance `validate!` / `valid?`.
+    def validate! : Nil
+      self.class.validate!
+    end
+
+    def valid? : Bool
+      self.class.valid?
+    end
+
     # Produce the gem's output envelope as `Hash(String, JSON::Any)`.
     #
-    # NOTE (deferred): the Ruby gem calls `validate!` here first, and merges
-    # conditional (`allOf`/`dependent*`) and `$defs` output. Those subsystems are
-    # not yet ported, so this emits only the type/properties/required/strict core.
+    # As in the Ruby gem, this validates the schema first (raising on a circular
+    # `$ref`) and emits `$defs` when any definitions are present.
+    #
+    # NOTE (still deferred): conditional (`allOf`/`dependent*`) merging is not
+    # yet ported, so that block is omitted from the output.
     def to_json_schema : Hash(String, JSON::Any)
+      validate!
+
       schema = {} of String => JSON::Any
       schema["type"] = JSON::Any.new("object")
       schema["properties"] = JSON::Any.new(self.class.properties)
@@ -190,6 +283,9 @@ module CrystalLLM
       schema["additionalProperties"] = JSON::Any.new(self.class.additional_properties)
       if s = self.class.strict
         schema["strict"] = JSON::Any.new(s)
+      end
+      unless self.class.definitions.empty?
+        schema["$defs"] = JSON::Any.new(self.class.definitions)
       end
 
       result = {} of String => JSON::Any
@@ -296,6 +392,40 @@ module CrystalLLM
         add(name, array_schema(items, description, min_items, max_items), required)
       end
 
+      # --- Composition -------------------------------------------------------
+
+      # `any_of`: collect member schemas from the block into an `anyOf` list.
+      def any_of(name : String, description : String? = nil, required : Bool = true,
+                 &block : MemberBuilder ->) : Nil
+        add(name, composition_schema("anyOf", description, &block), required)
+      end
+
+      # `one_of`: collect member schemas from the block into a `oneOf` list.
+      def one_of(name : String, description : String? = nil, required : Bool = true,
+                 &block : MemberBuilder ->) : Nil
+        add(name, composition_schema("oneOf", description, &block), required)
+      end
+
+      # `optional`: `anyOf` of the block's members plus a trailing `null` member.
+      def optional(name : String, description : String? = nil, &block : MemberBuilder ->) : Nil
+        add(name, composition_schema("anyOf", description) do |member|
+          block.call(member)
+          member.null
+        end, required: true)
+      end
+
+      private def composition_schema(key : String, description : String?,
+                                     &block : MemberBuilder ->) : Hash(String, JSON::Any)
+        member = MemberBuilder.new
+        block.call(member)
+        members = member.members
+        raise InvalidSchemaError.new("#{key} block did not produce any member schemas") if members.empty?
+        h = {} of String => JSON::Any
+        h["description"] = JSON::Any.new(description) if description
+        h[key] = JSON::Any.new(members.map { |schema| JSON::Any.new(schema) })
+        h
+      end
+
       # The item schema captured by an array-item block (`item.object`/`item.string`).
       @items : Hash(String, JSON::Any)? = nil
 
@@ -360,6 +490,178 @@ module CrystalLLM
         else
           @required.delete(name)
         end
+      end
+    end
+
+    # Collects alternative member schemas for `any_of` / `one_of` / `optional`.
+    #
+    # Crystal divergence: the Ruby gem's `collect_schemas_from_block` runs the
+    # block in an `instance_eval` context whose bare `string` / `object` / ...
+    # calls each push a schema. Here the block takes an explicit member builder
+    # (`|m|`) and each `m.string` / `m.object { ... }` / `m.reference(...)`
+    # appends one alternative.
+    class MemberBuilder
+      getter members : Array(Hash(String, JSON::Any))
+
+      def initialize
+        @members = [] of Hash(String, JSON::Any)
+        @scratch = Builder.new
+      end
+
+      # Primitive members. Names are irrelevant inside a composition, so these
+      # take only constraint options (the produced schema has no property name).
+      def string(description : String? = nil, enum_values : Array(String)? = nil,
+                 min_length : Int32? = nil, max_length : Int32? = nil,
+                 pattern : String? = nil, format : String? = nil) : Nil
+        @scratch.string("__m", description: description, enum_values: enum_values,
+          min_length: min_length, max_length: max_length, pattern: pattern, format: format)
+        take_scratch
+      end
+
+      def number(description : String? = nil, minimum : Float64? = nil,
+                 maximum : Float64? = nil, multiple_of : Float64? = nil) : Nil
+        @scratch.number("__m", description: description, minimum: minimum,
+          maximum: maximum, multiple_of: multiple_of)
+        take_scratch
+      end
+
+      def integer(description : String? = nil, minimum : Int32? = nil,
+                  maximum : Int32? = nil, multiple_of : Int32? = nil) : Nil
+        @scratch.integer("__m", description: description, minimum: minimum,
+          maximum: maximum, multiple_of: multiple_of)
+        take_scratch
+      end
+
+      def boolean(description : String? = nil) : Nil
+        @scratch.boolean("__m", description: description)
+        take_scratch
+      end
+
+      def null(description : String? = nil) : Nil
+        @scratch.null("__m", description: description)
+        take_scratch
+      end
+
+      # Inline object member.
+      def object(description : String? = nil, &block : Builder ->) : Nil
+        @scratch.object("__m", description: description, &block)
+        take_scratch
+      end
+
+      # Inline array member (primitives via `of:`, objects via the item block).
+      def array(description : String? = nil, of : Symbol? = nil,
+                min_items : Int32? = nil, max_items : Int32? = nil,
+                &block : Builder ->) : Nil
+        @scratch.array("__m", description: description, of: of,
+          min_items: min_items, max_items: max_items, &block)
+        take_scratch
+      end
+
+      def array(description : String? = nil, of : Symbol? = nil,
+                min_items : Int32? = nil, max_items : Int32? = nil) : Nil
+        @scratch.array("__m", description: description, of: of,
+          min_items: min_items, max_items: max_items)
+        take_scratch
+      end
+
+      # A `$ref` member pointing at a `$defs` entry (or the document root).
+      def reference(name : String) : Nil
+        if name == "#" || name == "root"
+          @members << {"$ref" => JSON::Any.new("#")}
+        else
+          @members << {"$ref" => JSON::Any.new("#/$defs/#{name}")}
+        end
+      end
+
+      # Move the just-built `__m` property out of the scratch builder and onto the
+      # members list as a bare schema (stripping the synthetic property name).
+      private def take_scratch : Nil
+        prop = @scratch.properties["__m"]
+        @members << prop.as_h.dup
+        @scratch = Builder.new
+      end
+    end
+
+    # Structural validator, ported from `validator.rb`. Operates on the produced
+    # `$defs` map and detects circular references via a 3-colour DFS.
+    #
+    # Crystal divergence: the Ruby validator is constructed from the schema class
+    # and reads `@schema_class.definitions`; here it takes the already-produced
+    # `definitions` hash (`Hash(String, JSON::Any)`) directly so it has no back
+    # reference to class state.
+    class Validator
+      enum Mark
+        White # unvisited
+        Gray  # on the current DFS path
+        Black # fully processed
+      end
+
+      def initialize(@definitions : Hash(String, JSON::Any))
+      end
+
+      def validate! : Nil
+        validate_circular_references!
+        # Future structural validations can be added here.
+      end
+
+      def valid? : Bool
+        validate!
+        true
+      rescue ValidationError
+        false
+      end
+
+      private def validate_circular_references! : Nil
+        return if @definitions.empty?
+
+        marks = {} of String => Mark
+        @definitions.each_key do |node|
+          visit(node, marks) if marks.fetch(node, Mark::White).white?
+        end
+      end
+
+      private def visit(node : String, marks : Hash(String, Mark)) : Nil
+        mark = marks.fetch(node, Mark::White)
+        return if mark.black?
+        raise ValidationError.new("Circular reference detected involving '#{node}'") if mark.gray?
+
+        marks[node] = Mark::Gray
+
+        if definition = @definitions[node]?
+          if (props = definition.as_h?) && (properties = props["properties"]?)
+            properties.as_h.each_value do |property|
+              extract_references(property).each do |adjacent|
+                visit(adjacent, marks)
+              end
+            end
+          end
+        end
+
+        marks[node] = Mark::Black
+      end
+
+      # Recursively collect the `$defs` names referenced by a property schema.
+      private def extract_references(property : JSON::Any) : Array(String)
+        references = [] of String
+
+        if hash = property.as_h?
+          if ref = hash["$ref"]?
+            if ref_str = ref.as_s?
+              name = ref_str.split("/").last?
+              references << name if name && name != "#" && !name.empty?
+            end
+          else
+            hash.each_value do |value|
+              references.concat(extract_references(value))
+            end
+          end
+        elsif arr = property.as_a?
+          arr.each do |item|
+            references.concat(extract_references(item))
+          end
+        end
+
+        references
       end
     end
 

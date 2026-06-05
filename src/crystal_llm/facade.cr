@@ -42,7 +42,6 @@
 # * `moderate(...)`   → `Moderation.moderate` — needs the moderation provider methods.
 #
 # Also deferred (not facade-shaped, belong to later ports):
-# * `instrument(...)` / `deprecator` — instrumentation + deprecator plumbing.
 # * The `Provider.register :anthropic, ...` (etc.) registration block at the bottom
 #   of ruby_llm.rb — each provider file self-registers at require time (see e.g.
 #   `providers/openai.cr`'s trailing `Provider.register("openai", ...)`).
@@ -52,6 +51,7 @@ require "./provider"
 require "./context"
 require "./configuration"
 require "./deprecator"
+require "./instrumentation"
 
 module CrystalLLM
   # Starts a new chat conversation. Mirrors `RubyLLM.chat`.
@@ -90,6 +90,15 @@ module CrystalLLM
   # ruby_llm's `yield ... if block_given?`, where the block is optional).
   def self.context : Context
     Context.create(config)
+  end
+
+  # Emits a structured instrumentation event around `block`, through the configured
+  # instrumenter (or transparently when none is set). Mirrors `RubyLLM.instrument`.
+  # See `Instrumentation` for the seam. Returns the block's value unchanged.
+  def self.instrument(name : String, payload : Instrumentation::Payload,
+                      config : Configuration? = nil,
+                      &block : Instrumentation::Payload -> T) : T forall T
+    Instrumentation.instrument(name, payload, config: config) { |event| block.call(event) }
   end
 
   # The shared deprecation handler (memoized). Mirrors ruby_llm's

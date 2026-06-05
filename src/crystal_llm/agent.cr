@@ -60,11 +60,6 @@
 #   are persistence-layer concerns owned by the `crystal-llm-marten` companion
 #   shard — DEFERRED here (design §10.7).
 # * **Instrumentation.** No instrumentation hooks (matches chat.cr/facade.cr).
-# * **`thinking` / `headers` / `schema` class macros.** ruby_llm's Agent also
-#   carries `thinking`, `headers`, and `schema` (with block forms). They port
-#   identically to `temperature`/`params` but are DEFERRED from this first cut to
-#   keep the surface focused on the approved §8 example (model / instructions /
-#   tools / temperature / params); add them the same way when needed.
 # * **`Enumerable` + the full `def_delegators` list.** ruby_llm mixes in
 #   `Enumerable` and delegates ~30 methods to `@chat`. This port delegates the
 #   common conversation surface (`ask`, `say`, `messages`, `tools`, `model`,
@@ -75,9 +70,18 @@ require "json"
 require "./chat"
 require "./tool"
 require "./context"
+require "./schema"
+require "./thinking"
 require "./facade"
 
 module CrystalLLM
+  # The shapes a static/block agent `schema` may hold — exactly `Chat#with_schema`'s
+  # accepted argument types (a `Schema` instance, a raw json-schema `Hash`, or a
+  # `JSON::Any`). Aliased to keep the per-subclass `resolve_schema` signatures on
+  # one line (a backslash line-continuation inside the `schema` macro is mangled
+  # by the formatter).
+  alias AgentSchemaValue = CrystalLLM::Schema | Hash(String, JSON::Any) | JSON::Any
+
   # Base class for simple, class-configured agents. See the file header for the
   # explicit-context design and the list of deferrals.
   abstract class Agent
@@ -89,12 +93,29 @@ module CrystalLLM
     @@agent_instructions : String? = nil
     @@agent_temperature : Float64? = nil
     @@agent_params : Hash(String, JSON::Any)? = nil
+    @@agent_headers : Hash(String, String)? = nil
+    @@agent_thinking : CrystalLLM::Thinking::Config? = nil
+    # A static schema is held as one of `with_schema`'s accepted shapes: a
+    # `Schema` instance, a raw json-schema `Hash`, or a `JSON::Any`. (ruby_llm
+    # accepts a Schema *class*; Crystal can't `.new` an arbitrary subclass with a
+    # shared contract — the same divergence as `tools` — so callers pass an
+    # instance.)
+    @@agent_schema : CrystalLLM::AgentSchemaValue? = nil
+    # A static config Context (`CrystalLLM::Context`) re-bound onto the Chat via
+    # `with_context`. Distinct from the per-subclass runtime `Context` used by the
+    # `instructions`/`tools`/`schema` blocks — referenced fully-qualified to avoid
+    # the name clash.
+    @@agent_context : CrystalLLM::Context? = nil
 
     macro inherited
       @@agent_model = nil
       @@agent_instructions = nil
       @@agent_temperature = nil
       @@agent_params = nil
+      @@agent_headers = nil
+      @@agent_thinking = nil
+      @@agent_schema = nil
+      @@agent_context = nil
 
       # Per-subclass list of declared inputs: [{name, Type}, …]. Consumed by the
       # `macro finished` hook to emit the typed Context + constructor.
@@ -140,6 +161,50 @@ module CrystalLLM
         @@agent_params
       end
 
+      # Static request headers merged onto the Chat via `with_headers` (which is
+      # replace-not-merge — preserved). Block form: `headers { |ctx| {...} }`.
+      def self.headers(value : Hash(String, String)) : Nil
+        @@agent_headers = value
+      end
+
+      def self.headers : Hash(String, String)?
+        @@agent_headers
+      end
+
+      # Enables thinking on the built Chat. Mirrors ruby_llm's dual-purpose
+      # `thinking(effort:, budget:)`: with no args it reads the configured
+      # `Thinking::Config`; with `effort`/`budget` it sets one. (`effort` is a
+      # String — symbols-as-runtime-data → String, §11.) Kept as a single method
+      # because both args are optional: a separate zero-arg getter would collide
+      # with the no-arg setter call (unlike `temperature`/`headers`, whose setters
+      # take a required arg and so don't clash with their getters).
+      def self.thinking(effort : String? = nil, budget : Int32? = nil) : CrystalLLM::Thinking::Config?
+        return @@agent_thinking if effort.nil? && budget.nil?
+
+        @@agent_thinking = CrystalLLM::Thinking::Config.new(effort: effort, budget: budget)
+      end
+
+      # Static structured-output schema. Accepts a `Schema` instance, a raw
+      # json-schema `Hash`, or a `JSON::Any` (all `with_schema` shapes). Block
+      # form: `schema { |ctx| ... }` (a macro below), which overrides
+      # `resolve_schema`.
+      def self.schema(value : CrystalLLM::AgentSchemaValue) : Nil
+        @@agent_schema = value
+      end
+
+      def self.schema : CrystalLLM::AgentSchemaValue?
+        @@agent_schema
+      end
+
+      # Static config Context re-bound onto the Chat via `with_context`.
+      def self.context(value : CrystalLLM::Context) : Nil
+        @@agent_context = value
+      end
+
+      def self.context : CrystalLLM::Context?
+        @@agent_context
+      end
+
       # Block form of `instructions`: `instructions { |ctx| "...#{ctx.foo}" }`.
       # Generates a `resolve_instructions(ctx)` override returning the block's
       # value. The block is typed against the per-subclass `Context`.
@@ -159,6 +224,32 @@ module CrystalLLM
           \{% raise "tools block must take exactly one arg (the ctx): tools { |ctx| ... }" %}
         \{% end %}
         def resolve_tools(\{{ block.args.first }} : Context) : Array(CrystalLLM::Tool)
+          \{{ block.body }}
+        end
+      end
+
+      # Block form of `headers`: `headers { |ctx| {"x" => ctx.foo} }`. Generates a
+      # `resolve_headers(ctx)` override; the block body is typed against `Context`.
+      macro headers(&block)
+        \{% if block.args.size != 1 %}
+          \{% raise "headers block must take exactly one arg (the ctx): headers { |ctx| ... }" %}
+        \{% end %}
+        def resolve_headers(\{{ block.args.first }} : Context) : Hash(String, String)?
+          \{{ block.body }}
+        end
+      end
+
+      # Block form of `schema`: `schema { |ctx| MySchema.new(ctx.kind) }`. Generates
+      # a `resolve_schema(ctx)` override returning any `with_schema` shape (a
+      # `Schema` instance / json-schema `Hash` / `JSON::Any`), typed against
+      # `Context`. (ruby_llm also treats a NoMethodError-on-ctx block as a
+      # `Schema.create(&block)` DSL; `Schema.create` is dropped in this port — see
+      # schema.cr — so the block here must return a value, not a bare DSL body.)
+      macro schema(&block)
+        \{% if block.args.size != 1 %}
+          \{% raise "schema block must take exactly one arg (the ctx): schema { |ctx| ... }" %}
+        \{% end %}
+        def resolve_schema(\{{ block.args.first }} : Context) : CrystalLLM::AgentSchemaValue?
           \{{ block.body }}
         end
       end
@@ -200,9 +291,23 @@ module CrystalLLM
         [] of CrystalLLM::Tool
       end
 
+      def resolve_headers(ctx : Context) : Hash(String, String)?
+        self.class.headers
+      end
+
+      def resolve_schema(ctx : Context) : CrystalLLM::AgentSchemaValue?
+        self.class.schema
+      end
+
       # Applies the resolved configuration onto `@chat` (mirrors ruby_llm's
       # `apply_configuration` → `apply_instructions`/`apply_tools`/… sequence).
       private def apply_configuration(ctx : Context) : Nil
+        # Context first (ruby_llm order): `with_context` re-binds the provider, so
+        # it must run before the value-setting builders below.
+        if context = self.class.context
+          @chat.with_context(context)
+        end
+
         if instr = resolve_instructions(ctx)
           @chat.with_instructions(instr)
         end
@@ -215,6 +320,18 @@ module CrystalLLM
 
         if prm = self.class.params
           @chat.with_params(prm) unless prm.empty?
+        end
+
+        if hdrs = resolve_headers(ctx)
+          @chat.with_headers(hdrs) unless hdrs.empty?
+        end
+
+        if thinking = self.class.thinking
+          @chat.with_thinking(effort: thinking.effort, budget: thinking.budget)
+        end
+
+        if sch = resolve_schema(ctx)
+          @chat.with_schema(sch)
         end
       end
 

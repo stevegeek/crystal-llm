@@ -6,9 +6,17 @@ require "../src/crystal_llm/agent"
 # overloads.
 class AgentSpecFakeProvider < CrystalLLM::Provider
   class_property scripted : Array(CrystalLLM::Message) = [] of CrystalLLM::Message
+  # Captured on the last `complete` call so tests can assert the Agent applied
+  # `thinking`/`headers`/`schema` to the Chat that drives this provider.
+  class_property captured_thinking : CrystalLLM::Thinking::Config? = nil
+  class_property captured_headers : Hash(String, String) = {} of String => String
+  class_property captured_schema : JSON::Any? = nil
 
   def self.reset! : Nil
     self.scripted = [] of CrystalLLM::Message
+    self.captured_thinking = nil
+    self.captured_headers = {} of String => String
+    self.captured_schema = nil
   end
 
   def self.configuration_requirements : Array(String)
@@ -23,6 +31,9 @@ class AgentSpecFakeProvider < CrystalLLM::Provider
                schema : JSON::Any? = nil,
                thinking : CrystalLLM::Thinking::Config? = nil,
                tool_prefs : Hash(String, String?)? = nil) : CrystalLLM::Message
+    self.class.captured_thinking = thinking
+    self.class.captured_headers = headers
+    self.class.captured_schema = schema
     self.class.scripted.shift
   end
 
@@ -92,9 +103,36 @@ private class GreeterAgent < CrystalLLM::Agent
   instructions { |ctx| "hi #{ctx.user}" }
 end
 
+# A schema used by the macro tests.
+private class PersonSchema < CrystalLLM::Schema
+  string "name"
+  integer "age"
+end
+
+# An agent applying the new class macros: headers / schema / thinking.
+private class ConfiguredAgent < CrystalLLM::Agent
+  model "agent-fake-model"
+  headers({"X-Trace" => "abc"})
+  schema PersonSchema.new("person")
+  thinking effort: "high"
+end
+
+# A ctx-block schema resolved against a typed input.
+private class DynamicSchemaAgent < CrystalLLM::Agent
+  model "agent-fake-model"
+  input person_name : String # ameba:disable Lint/UselessAssign
+  schema { |ctx| PersonSchema.new(ctx.person_name) }
+end
+
 # The system-message content of an agent's built Chat (or nil if none).
 private def system_content(agent : CrystalLLM::Agent) : String | CrystalLLM::Content | Nil
   agent.chat.messages.find(&.role.system?).try(&.content)
+end
+
+# The normalized schema envelope an agent applied to its Chat. Fails the spec
+# (rather than `not_nil!`-ing) if no schema was applied.
+private def chat_schema(agent : CrystalLLM::Agent) : JSON::Any
+  agent.chat.schema || fail "expected the agent to apply a schema, got nil"
 end
 
 describe CrystalLLM::Agent do
@@ -132,6 +170,44 @@ describe CrystalLLM::Agent do
     it "resolves a different input independently per instance" do
       system_content(GreeterAgent.new(user: "Ada")).should eq("hi Ada")
       system_content(GreeterAgent.new(user: "Lin")).should eq("hi Lin")
+    end
+  end
+
+  describe "headers / schema / thinking class macros" do
+    before_each { seed_agent_fake_model; AgentSpecFakeProvider.reset! }
+
+    it "applies static headers to the built Chat" do
+      ConfiguredAgent.new.chat.headers.should eq({"X-Trace" => "abc"})
+    end
+
+    it "applies a static schema to the built Chat" do
+      schema = chat_schema(ConfiguredAgent.new)
+      schema["name"].as_s.should eq("person")
+      props = schema["schema"]["properties"].as_h
+      props.keys.should contain("name")
+      props.keys.should contain("age")
+    end
+
+    it "applies thinking to the built Chat (observed via the provider)" do
+      AgentSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "ok"),
+      ]
+      ConfiguredAgent.new.ask("q")
+      captured = AgentSpecFakeProvider.captured_thinking
+      (captured || fail "expected thinking to be applied").effort.should eq("high")
+    end
+  end
+
+  describe "a ctx-block schema" do
+    before_each { seed_agent_fake_model }
+
+    it "resolves the schema block against a passed input" do
+      chat_schema(DynamicSchemaAgent.new(person_name: "Ada"))["name"].as_s.should eq("Ada")
+    end
+
+    it "resolves a different input independently per instance" do
+      chat_schema(DynamicSchemaAgent.new(person_name: "Lin"))["name"].as_s.should eq("Lin")
+      chat_schema(DynamicSchemaAgent.new(person_name: "Sam"))["name"].as_s.should eq("Sam")
     end
   end
 

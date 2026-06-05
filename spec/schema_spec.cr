@@ -34,6 +34,49 @@ module SchemaSpecHelpers
   class NumberConstraints < CrystalLLM::Schema
     number "ratio", minimum: 0.0, maximum: 100.0, multiple_of: 0.5
   end
+
+  # Composition: any_of / one_of / optional.
+  class WithComposition < CrystalLLM::Schema
+    any_of "id", description: "string or int id" do |member|
+      member.string
+      member.integer
+    end
+
+    one_of "shape" do |member|
+      member.object do |obj|
+        obj.string "kind"
+      end
+      member.string enum_values: ["none"]
+    end
+
+    optional "nickname" do |member|
+      member.string
+    end
+  end
+
+  # $defs + reference, with a composition member that references a definition.
+  class WithDefs < CrystalLLM::Schema
+    define "address" do |defn|
+      defn.string "city"
+      defn.string "zip", required: false
+    end
+
+    any_of "home" do |member|
+      member.reference "address"
+      member.null
+    end
+  end
+
+  # A self-referential (cyclic) $defs graph: node -> node, to exercise the
+  # validator's circular-reference detection.
+  class CyclicDefs < CrystalLLM::Schema
+    define "node" do |defn|
+      defn.any_of "next" do |member|
+        member.reference "node"
+        member.null
+      end
+    end
+  end
 end
 
 describe CrystalLLM::Schema do
@@ -138,6 +181,75 @@ describe CrystalLLM::Schema do
       score = SchemaSpecHelpers::FlatPerson.new("p")
         .to_json_schema["schema"].as_h["properties"].as_h["score"].as_h
       score["minimum"].raw.should be_a(Int64)
+    end
+  end
+
+  describe "composition (any_of / one_of / optional)" do
+    it "produces anyOf / oneOf member lists" do
+      schema = SchemaSpecHelpers::WithComposition.new("c").to_json_schema["schema"].as_h
+      props = schema["properties"].as_h
+
+      id = props["id"].as_h
+      id["description"].should eq(JSON::Any.new("string or int id"))
+      id_members = id["anyOf"].as_a.map(&.as_h)
+      id_members.map(&.["type"].as_s).should eq(["string", "integer"])
+
+      shape = props["shape"].as_h
+      shape_members = shape["oneOf"].as_a.map(&.as_h)
+      shape_members[0]["type"].as_s.should eq("object")
+      shape_members[0]["properties"].as_h["kind"].as_h["type"].as_s.should eq("string")
+      shape_members[1]["type"].as_s.should eq("string")
+      shape_members[1]["enum"].as_a.map(&.as_s).should eq(["none"])
+    end
+
+    it "appends a null member for optional" do
+      schema = SchemaSpecHelpers::WithComposition.new("c").to_json_schema["schema"].as_h
+      nickname = schema["properties"].as_h["nickname"].as_h
+      members = nickname["anyOf"].as_a.map(&.as_h)
+      members.map(&.["type"].as_s).should eq(["string", "null"])
+      # optional keys are still required (present, but may be null)
+      schema["required"].as_a.map(&.as_s).should contain("nickname")
+    end
+  end
+
+  describe "$defs and reference" do
+    it "emits $defs and a $ref into a composition member" do
+      schema = SchemaSpecHelpers::WithDefs.new("d").to_json_schema["schema"].as_h
+
+      defs = schema["$defs"].as_h
+      defs.has_key?("address").should be_true
+      addr = defs["address"].as_h
+      addr["type"].as_s.should eq("object")
+      addr["properties"].as_h["city"].as_h["type"].as_s.should eq("string")
+      addr["required"].as_a.map(&.as_s).should eq(["city"])
+
+      home = schema["properties"].as_h["home"].as_h
+      members = home["anyOf"].as_a.map(&.as_h)
+      members[0]["$ref"].as_s.should eq("#/$defs/address")
+      members[1]["type"].as_s.should eq("null")
+    end
+
+    it "valid? is true for a well-formed (non-cyclic) schema" do
+      SchemaSpecHelpers::WithDefs.valid?.should be_true
+      SchemaSpecHelpers::WithDefs.new("d").valid?.should be_true
+    end
+  end
+
+  describe "validate! (circular references)" do
+    it "raises ValidationError on a self-referential $defs cycle" do
+      expect_raises(CrystalLLM::Schema::ValidationError, /Circular reference/) do
+        SchemaSpecHelpers::CyclicDefs.validate!
+      end
+    end
+
+    it "valid? is false for a cyclic schema" do
+      SchemaSpecHelpers::CyclicDefs.valid?.should be_false
+    end
+
+    it "to_json_schema raises on a cyclic schema" do
+      expect_raises(CrystalLLM::Schema::ValidationError) do
+        SchemaSpecHelpers::CyclicDefs.new("x").to_json_schema
+      end
     end
   end
 

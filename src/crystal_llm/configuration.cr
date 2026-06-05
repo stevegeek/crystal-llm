@@ -26,8 +26,12 @@ module CrystalLLM
     # ruby_llm's `model_registry_source` (an ActiveRecord source object) — typed
     # loosely until the model registry lands; the AR variant lives in crystal-llm-marten.
     property model_registry_source : String? = nil
-    # `instrumenter` is intentionally deferred to the instrumentation port (would be
-    # wrongly typed as String? now). Tracked in PORTING.md.
+
+    # The pluggable instrumentation sink (`nil` = no instrumentation, a transparent
+    # no-op). Typed `Instrumenter?` rather than ruby_llm's untyped duck-typed slot.
+    # The property is ADDED by `instrumentation.cr` reopening this class (the same
+    # late-require pattern providers use for their api-key options), so the type is
+    # known by the time it is referenced. See PORTING.md.
 
     property request_timeout : Int32 = 300
     property max_retries : Int32 = 3

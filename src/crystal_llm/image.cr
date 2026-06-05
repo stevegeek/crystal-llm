@@ -2,6 +2,10 @@
 require "base64"
 require "./tokens"
 require "./connection"
+require "./cost"
+require "./models"
+require "./model/info"
+require "./error"
 
 module CrystalLLM
   # Represents a generated image from an AI model.
@@ -19,8 +23,14 @@ module CrystalLLM
   # * `Image.paint` (the class method that resolves a model and calls a provider)
   #   is DEFERRED: it needs the `Models` registry and a `Provider` instance, neither
   #   of which is ported yet. See `deferrals`.
-  # * `#cost` / `#model_info` are DEFERRED: they need the `Cost` value object and
-  #   the `Models` registry. `#tokens` (which only needs `Tokens`) is ported.
+  # * `#cost` / `#model_info` are ported. `#model_info` resolves the model via
+  #   `Models.find(model_id)` (ruby_llm's `RubyLLM.models.find`), swallowing
+  #   `ModelNotFoundError` to nil. `#cost` builds a `Cost` in the `:images`
+  #   category, passing `input_tokens_details` (text/image token split) through.
+  #   ruby_llm reads `usage_value('input_tokens_details')` as a string/symbol-keyed
+  #   hash; here `usage["input_tokens_details"]` is a `JSON::Any` object, coerced
+  #   to the `Hash(String, Int32?)` that `Cost` expects (only the
+  #   "text_tokens"/"image_tokens" keys are consumed downstream).
   class Image
     getter url : String?
     getter data : String?
@@ -69,10 +79,59 @@ module CrystalLLM
       )
     end
 
-    # NOTE: `#cost` and `#model_info` are deferred (need Cost + Models registry).
+    # Cost of the paint request, in the `:images` pricing category. Mirrors
+    # ruby_llm's `Cost.new(tokens:, model: model_info, category: :images,
+    # input_details: input_tokens_details)`.
+    def cost : Cost
+      Cost.new(
+        tokens: tokens,
+        model: model_info,
+        category: Cost::Category::Images,
+        input_details: input_tokens_details,
+      )
+    end
+
+    # The registry `Model::Info` for this image's `model_id`, or nil when there
+    # is no model id or the id isn't in the registry. Mirrors ruby_llm's
+    # `RubyLLM.models.find(model_id)` rescuing `ModelNotFoundError`.
+    def model_info : Model::Info?
+      id = @model_id
+      return nil unless id
+
+      @model_info ||= begin
+        Models.find(id)
+      rescue ModelNotFoundError
+        nil
+      end
+    end
+
     # NOTE: `Image.paint` is deferred (needs Models registry + Provider instance).
 
     @tokens : Tokens?
+    @model_info : Model::Info?
+
+    # ruby_llm's private `input_tokens_details` — the per-modality input token
+    # split (text vs image) used by `Cost` when category is `:images`. Returns
+    # nil when usage carries no such detail. The wire value is a JSON object;
+    # coerce its numeric entries into the `Hash(String, Int32?)` `Cost` expects.
+    private def input_tokens_details : Hash(String, Int32?)?
+      value = @usage["input_tokens_details"]?
+      return nil unless value
+
+      obj = value.as_h?
+      return nil unless obj
+
+      details = {} of String => Int32?
+      obj.each do |key, inner|
+        details[key] = case raw = inner.raw
+                       when Int64   then raw.to_i32
+                       when Int32   then raw
+                       when Float64 then raw.to_i32
+                       else              nil
+                       end
+      end
+      details
+    end
 
     private def usage_value(key : String) : Int32?
       value = @usage[key]?

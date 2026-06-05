@@ -26,9 +26,12 @@
 #   completion loop (`complete_once` / `handle_tool_calls`) is duplicated across
 #   the two so the streaming block threads through correctly.
 #
-# * Instrumentation (`instrument_completion` / `RubyLLM.instrument`) is DEFERRED
-#   (the instrumentation port hasn't landed). `complete` calls `complete_once`
-#   directly. Noted in deferrals.
+# * Instrumentation: `complete` wraps `complete_once` in `instrument_completion`,
+#   emitting a `chat.crystal_llm` event (model / messages / tools / token counts)
+#   through the configured `Configuration#instrumenter` (a no-op when none is set,
+#   so behaviour is unchanged). Tool execution emits `tool_call.crystal_llm` via
+#   `execute_tool`. ruby_llm's event names are `chat.ruby_llm` / `tool_call.ruby_llm`;
+#   the port renames the suffix to `crystal_llm` (documented divergence).
 #
 # * `with_schema` accepts a raw json-schema (`JSON::Any` / `Hash(String,
 #   JSON::Any)`) OR a `CrystalLLM::Schema` instance (→ `to_json_schema`). The
@@ -65,6 +68,7 @@ require "./provider_completion"
 require "./configuration"
 require "./context"
 require "./error"
+require "./instrumentation"
 
 module CrystalLLM
   # Represents a conversation with an AI model.
@@ -319,13 +323,60 @@ module CrystalLLM
     # ---- Completion (sync) -------------------------------------------------
 
     def complete : Message
-      complete_once
+      instrument_completion(streaming: false) { complete_once }
     end
 
     # ---- Completion (streaming) --------------------------------------------
 
     def complete(&block : CrystalLLM::Chunk ->) : Message
-      complete_once(&block)
+      instrument_completion(streaming: true) { complete_once(&block) }
+    end
+
+    # Wraps a completion run in a `chat.crystal_llm` instrumentation event. Builds
+    # the request-side payload (model / messages / tools / options), runs the work,
+    # then attaches the response-side keys (response, token counts, tool calls) to
+    # the same event — mirroring ruby_llm's `instrument_completion`. When no
+    # instrumenter is configured this is a transparent no-op: the block runs and its
+    # result is returned untouched.
+    private def instrument_completion(streaming : Bool, &block : -> Message) : Message
+      payload = build_chat_payload(streaming)
+      CrystalLLM.instrument("chat.crystal_llm", payload, config: @config) do |event|
+        result = block.call
+        event["response"] = result
+        event["messages_after"] = @messages.dup
+        event["response_role"] = result.role.to_s
+        event["response_model"] = result.model_id
+        event["tool_call"] = result.tool_call?
+        event["tool_calls"] = result.tool_calls
+        event["input_tokens"] = result.input_tokens
+        event["output_tokens"] = result.output_tokens
+        event["cached_tokens"] = result.cached_tokens
+        event["cache_creation_tokens"] = result.cache_creation_tokens
+        event["thinking_tokens"] = result.thinking_tokens
+        result
+      end
+    end
+
+    # The request-side `chat.crystal_llm` payload. Mirrors ruby_llm's payload keys
+    # (symbol → String). `chat` carries `self` so a sink can introspect the run.
+    private def build_chat_payload(streaming : Bool) : Instrumentation::Payload
+      payload = Instrumentation::Payload.new
+      payload["chat"] = self
+      payload["provider"] = @provider.slug
+      payload["provider_class"] = @provider.class
+      payload["model"] = @model.id
+      payload["model_info"] = @model
+      payload["input_messages"] = @messages.dup
+      payload["message_count"] = @messages.size
+      payload["tools"] = @tools.keys
+      payload["tool_choice"] = @tool_prefs["choice"]?
+      payload["tool_call_limit"] = @tool_prefs["calls"]?
+      payload["temperature"] = @temperature
+      payload["params"] = JSON::Any.new(@params)
+      payload["schema"] = @schema
+      payload["thinking"] = @thinking
+      payload["streaming"] = streaming
+      payload
     end
 
     # Aggregate cost across all messages. Mirrors ruby_llm's
@@ -449,7 +500,31 @@ module CrystalLLM
         } of String => JSON::Any
       end
 
-      tool.call(tool_call.arguments)
+      instrument_tool_call(tool, tool_call) { tool.call(tool_call.arguments) }
+    end
+
+    # Wraps a single tool invocation in a `tool_call.crystal_llm` event, attaching
+    # the result to the event after the call. Mirrors ruby_llm's `execute_tool`
+    # instrumentation. No-op (just runs the block) when no instrumenter is set.
+    private def instrument_tool_call(tool : Tool, tool_call : ToolCall, &block : -> ToolResult) : ToolResult
+      payload = Instrumentation::Payload.new
+      payload["chat"] = self
+      payload["provider"] = @provider.slug
+      payload["provider_class"] = @provider.class
+      payload["model"] = @model.id
+      payload["model_info"] = @model
+      payload["tool"] = tool
+      payload["tool_call"] = tool_call
+      payload["tool_name"] = tool.name
+      payload["tool_arguments"] = JSON::Any.new(tool_call.arguments)
+      payload["tool_call_id"] = tool_call.id
+
+      CrystalLLM.instrument("tool_call.crystal_llm", payload, config: @config) do |event|
+        result = block.call
+        event["result"] = result
+        event["result_content"] = result.is_a?(Tool::Halt) ? result.content : result
+        result
+      end
     end
 
     # ---- Content + schema helpers ------------------------------------------

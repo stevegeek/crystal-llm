@@ -53,6 +53,7 @@ require "./crystal_llm/providers/azure"
 require "./crystal_llm/providers/bedrock"
 require "./crystal_llm/providers/vertexai"
 require "./crystal_llm/chat"
+require "./crystal_llm/instrumentation"
 require "./crystal_llm/agent"
 require "./crystal_llm/facade"
 

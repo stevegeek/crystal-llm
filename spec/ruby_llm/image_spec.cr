@@ -97,4 +97,54 @@ describe CrystalLLM::Image do
       CrystalLLM::Image.new(url: "https://example.com/a.png").tokens.should be_nil
     end
   end
+
+  describe "#model_info" do
+    it "resolves the registry Model::Info for the image's model_id" do
+      info = CrystalLLM::Image.new(model_id: "gpt-image-1").model_info
+      info.should be_a(CrystalLLM::Model::Info)
+      raise "expected model_info" unless info
+      info.id.should eq("gpt-image-1")
+    end
+
+    it "is nil when there is no model id" do
+      CrystalLLM::Image.new(url: "https://example.com/a.png").model_info.should be_nil
+    end
+
+    it "is nil when the model id is not in the registry" do
+      CrystalLLM::Image.new(model_id: "totally-made-up-model-xyz").model_info.should be_nil
+    end
+  end
+
+  describe "#cost" do
+    # gpt-image-1 (openai) registry pricing: text input 5.0/M, image input
+    # 10.0/M, image output 40.0/M. With 100 text-input + 250 image-input tokens
+    # and 50 output tokens (mirrors cost_spec's image-cost case):
+    #   input  = 100*5/1M + 250*10/1M = 0.0005 + 0.0025 = 0.003
+    #   output = 50*40/1M                                = 0.002
+    #   total                                            = 0.005
+    it "prices the paint request in the images category using input token details" do
+      usage = {
+        "input_tokens"         => JSON::Any.new(350_i64),
+        "output_tokens"        => JSON::Any.new(50_i64),
+        "input_tokens_details" => JSON::Any.new({
+          "text_tokens"  => JSON::Any.new(100_i64),
+          "image_tokens" => JSON::Any.new(250_i64),
+        }),
+      }
+      cost = CrystalLLM::Image.new(model_id: "gpt-image-1", usage: usage).cost
+
+      cost.category.images?.should be_true
+      cost.input.try(&.should be_close(0.003, 0.0000000001))
+      cost.output.try(&.should be_close(0.002, 0.0000000001))
+      cost.total.try(&.should be_close(0.005, 0.0000000001))
+    end
+
+    it "has no token costs and an unknown model when usage and model_id are absent" do
+      cost = CrystalLLM::Image.new(url: "https://example.com/a.png").cost
+
+      cost.tokens?.should be_false
+      cost.model.should be_nil
+      cost.total.should be_nil
+    end
+  end
 end
