@@ -191,6 +191,79 @@ describe CrystalLLM::Providers::OpenRouter do
         provider.parse_completion_response(build_response(402, body))
       end
     end
+
+    it "attaches thinking from a reasoning String" do
+      body = <<-JSON
+      {
+        "model": "anthropic/claude-3.7-sonnet",
+        "choices": [
+          {"message": {"role": "assistant", "content": "Answer.", "reasoning": "I reasoned."}}
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
+      }
+      JSON
+      message = configured_openrouter.parse_completion_response(build_response(200, body))
+      message.content.should eq("Answer.")
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should eq("I reasoned.")
+    end
+
+    it "attaches thinking text + signature from reasoning_details" do
+      body = <<-JSON
+      {
+        "model": "anthropic/claude-3.7-sonnet",
+        "choices": [
+          {"message": {"role": "assistant", "content": "Answer.",
+            "reasoning_details": [
+              {"type": "reasoning.text", "text": "First. ", "signature": "or-sig"},
+              {"type": "reasoning.summary", "summary": "Second."}
+            ]}}
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
+      }
+      JSON
+      message = configured_openrouter.parse_completion_response(build_response(200, body))
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should eq("First. Second.")
+      thinking.signature.should eq("or-sig")
+    end
+
+    it "reads an encrypted-reasoning signature when no text is present" do
+      body = <<-JSON
+      {
+        "model": "anthropic/claude-3.7-sonnet",
+        "choices": [
+          {"message": {"role": "assistant", "content": "Answer.",
+            "reasoning_details": [
+              {"type": "reasoning.encrypted", "data": "enc-sig"}
+            ]}}
+        ],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10}
+      }
+      JSON
+      message = configured_openrouter.parse_completion_response(build_response(200, body))
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should be_nil
+      thinking.signature.should eq("enc-sig")
+    end
+  end
+
+  describe "outbound thinking (reasoning_details)" do
+    it "re-emits thinking as reasoning_details on an assistant message" do
+      provider = configured_openrouter
+      assistant = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant, content: "Answer.",
+        thinking: CrystalLLM::Thinking.new(text: "my reasoning", signature: "sig-z")
+      )
+      formatted = provider.format_messages([assistant])
+      entry = formatted[0].as_h
+      details = entry["reasoning_details"].as_a
+      details.size.should eq(1)
+      detail = details[0].as_h
+      detail["type"].as_s.should eq("reasoning.text")
+      detail["text"].as_s.should eq("my reasoning")
+      detail["signature"].as_s.should eq("sig-z")
+    end
   end
 
   describe "#build_chunk" do

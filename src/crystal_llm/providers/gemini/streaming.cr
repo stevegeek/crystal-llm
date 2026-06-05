@@ -5,8 +5,9 @@
 # parsed event; this is the Gemini candidate-delta -> Chunk mapping.
 #
 # Divergences:
-# - thinking text/signature are NOT attached to the Chunk (Crystal Chunk/Message
-#   carry no `thinking:` field yet — message.cr); thinking_tokens ARE wired.
+# - thinking text (thought parts) + signature (thoughtSignature) ARE attached to the
+#   Chunk via `Thinking.build`; the StreamAccumulator folds them into the final
+#   Message. thinking_tokens ARE wired.
 # - `parse_streaming_error` is ported for the streaming-error-status mapping (used
 #   once the stream loop surfaces errors).
 require "json"
@@ -26,6 +27,10 @@ module CrystalLLM
           role: Role::Assistant,
           model_id: data["modelVersion"]?.try(&.as_s?),
           content: extract_text_parts(parts),
+          thinking: Thinking.build(
+            text: extract_thought_parts(parts),
+            signature: extract_thought_signature(parts)
+          ),
           input_tokens: input_tokens(data),
           output_tokens: extract_output_tokens(data),
           cached_tokens: usage_int(data, "cachedContentTokenCount"),

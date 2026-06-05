@@ -11,10 +11,13 @@
 #
 # Divergences / deferrals:
 # - Assistant thinking *blocks* in format_messages (`format_content_with_thinking` /
-#   `build_thinking_blocks`) read `msg.thinking`, which is DEFERRED in this port
-#   (Message#thinking is deferred — see message.cr / openai.cr). So format_messages
-#   reuses the OpenAI base (text/Raw/Hash content paths only); assistant-thinking
-#   block injection is deferred with Message#thinking. The thinking-*payload* shaping
+#   `build_thinking_blocks`) read `msg.thinking` and are PORTED: an assistant message
+#   with thinking gets a leading `{type: thinking, thinking: [{type: text, text}],
+#   signature}` content block (or a signature-only thinking block). This overrides
+#   the OpenAI base `format_messages` so Mistral emits its thinking-block shape rather
+#   than OpenAI's `reasoning`/`reasoning_content` keys. Inbound thinking is handled by
+#   the inherited OpenAI `parse_completion_response` (content-block extraction), which
+#   matches ruby_llm (Mistral does not override it). The thinking-*payload* shaping
 #   (reasoning_effort / prompt_mode / reasoning) operates on `Thinking::Config` and
 #   IS ported.
 # - `tool_choice` is sourced from a `tool_choice` payload key written by the chat/
@@ -33,6 +36,80 @@ module CrystalLLM
       # Mistral uses the bare downcased role for every role (no developer mapping).
       def format_role(role : Role) : String
         role.to_s.downcase
+      end
+
+      # Overrides OpenAI's `format_messages` so assistant thinking is emitted as
+      # Mistral thinking content blocks (not OpenAI's `reasoning` keys).
+      def format_messages(messages : Array(Message)) : Array(JSON::Any)
+        messages.map do |msg|
+          entry = {} of String => JSON::Any
+          entry["role"] = JSON::Any.new(format_role(msg.role))
+          entry["content"] = format_content_with_thinking(msg)
+          if formatted = format_tool_calls(msg.tool_calls)
+            entry["tool_calls"] = formatted
+          end
+          if id = msg.tool_call_id
+            entry["tool_call_id"] = JSON::Any.new(id)
+          end
+          JSON::Any.new(entry)
+        end
+      end
+
+      # The content wire value, with a leading thinking block prepended when an
+      # assistant message carries thinking. Mirrors ruby_llm's
+      # `format_content_with_thinking` (+ `build_thinking_blocks`).
+      def format_content_with_thinking(msg : Message) : JSON::Any
+        formatted = Media.format_content(msg.content)
+        thinking = msg.thinking
+        return formatted unless msg.role.assistant? && thinking
+
+        blocks = build_thinking_blocks(thinking)
+        append_formatted_content(blocks, formatted)
+        JSON::Any.new(blocks)
+      end
+
+      # A Mistral thinking content block: text -> `{type: thinking, thinking: [{type:
+      # text, text}], signature?}`; signature-only -> `{type: thinking, signature}`.
+      private def build_thinking_blocks(thinking : Thinking) : Array(JSON::Any)
+        if text = thinking.text
+          block = {
+            "type"     => JSON::Any.new("thinking"),
+            "thinking" => JSON::Any.new([
+              JSON::Any.new({
+                "type" => JSON::Any.new("text"),
+                "text" => JSON::Any.new(text),
+              } of String => JSON::Any),
+            ]),
+          } of String => JSON::Any
+          if sig = thinking.signature
+            block["signature"] = JSON::Any.new(sig)
+          end
+          [JSON::Any.new(block)]
+        elsif sig = thinking.signature
+          [JSON::Any.new({
+            "type"      => JSON::Any.new("thinking"),
+            "signature" => JSON::Any.new(sig),
+          } of String => JSON::Any)]
+        else
+          [] of JSON::Any
+        end
+      end
+
+      # Appends the formatted content onto the thinking blocks: an array of parts is
+      # concatenated; a non-null scalar becomes a `{type: text, text}` block.
+      private def append_formatted_content(blocks : Array(JSON::Any), formatted : JSON::Any) : Nil
+        if arr = formatted.as_a?
+          blocks.concat(arr)
+        elsif !formatted.raw.nil?
+          if s = formatted.as_s?
+            blocks << JSON::Any.new({
+              "type" => JSON::Any.new("text"),
+              "text" => JSON::Any.new(s),
+            } of String => JSON::Any)
+          else
+            blocks << formatted
+          end
+        end
       end
 
       def render_payload(messages : Array(Message), tools : Hash(String, Tool),

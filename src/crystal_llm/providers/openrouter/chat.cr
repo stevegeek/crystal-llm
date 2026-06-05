@@ -15,9 +15,12 @@
 #   schema map and drops a top-level "strict" key the same way.
 # - `build_reasoning` reads a `Thinking::Config` (`.effort`/`.budget`); Crystal's
 #   Config always responds, so the Ruby `respond_to?` guards collapse to nil-checks.
-# - thinking text/signature *extraction* into Message/Chunk is deferred (Message#thinking
-#   deferred — same as OpenAI). `format_thinking` (reasoning_details on outbound
-#   messages) is deferred with it; format_messages is inherited from OpenAI.
+# - thinking text/signature extraction into the Message IS wired here. OpenRouter's
+#   reasoning shape differs from OpenAI's: a message carries either a `reasoning`
+#   String or a `reasoning_details` array (`reasoning.text`/`reasoning.summary`/
+#   `reasoning.encrypted` entries). This file overrides `parse_completion_response`
+#   (to read that shape) and `format_thinking` (to re-emit `reasoning_details` on
+#   outbound assistant messages, via the inherited OpenAI `format_messages`).
 require "json"
 require "../openai"
 require "../openrouter"
@@ -93,6 +96,92 @@ module CrystalLLM
         end
         reasoning["enabled"] = JSON::Any.new(true) if reasoning.empty?
         JSON::Any.new(reasoning)
+      end
+
+      # ---- inbound thinking extraction (OpenRouter reasoning shape) ----
+      #
+      # These override the OpenAI base helpers (which the inherited
+      # `parse_completion_response` calls), so the round-trip reads OpenRouter's
+      # `reasoning` String / `reasoning_details` array rather than OpenAI's
+      # `reasoning_content` keys. ruby_llm: openrouter/chat.rb#extract_thinking_*.
+
+      # `reasoning` String wins; otherwise join `reasoning.text`/`reasoning.summary`
+      # entries from `reasoning_details`. nil when empty.
+      def extract_thinking_text(message_data : Hash(String, JSON::Any)) : String?
+        if reasoning = message_data["reasoning"]?.try(&.as_s?)
+          return reasoning
+        end
+
+        details = message_data["reasoning_details"]?.try(&.as_a?)
+        return nil unless details
+
+        text = String.build do |io|
+          details.each do |detail_any|
+            detail = detail_any.as_h? || next
+            case detail["type"]?.try(&.as_s?)
+            when "reasoning.text"
+              io << (detail["text"]?.try(&.as_s?) || "")
+            when "reasoning.summary"
+              io << (detail["summary"]?.try(&.as_s?) || "")
+            end
+          end
+        end
+        text.empty? ? nil : text
+      end
+
+      # The first String `signature` in `reasoning_details`, else the `data` of a
+      # `reasoning.encrypted` entry.
+      def extract_thinking_signature(message_data : Hash(String, JSON::Any)) : String?
+        details = message_data["reasoning_details"]?.try(&.as_a?)
+        return nil unless details
+
+        details.each do |detail_any|
+          detail = detail_any.as_h? || next
+          if sig = detail["signature"]?.try(&.as_s?)
+            return sig
+          end
+        end
+
+        details.each do |detail_any|
+          detail = detail_any.as_h? || next
+          next unless detail["type"]?.try(&.as_s?) == "reasoning.encrypted"
+          if data = detail["data"]?.try(&.as_s?)
+            return data
+          end
+        end
+        nil
+      end
+
+      # ---- outbound thinking (reasoning_details on assistant messages) ----
+      #
+      # Overrides OpenAI's `format_thinking` (called by the inherited
+      # `format_messages`): OpenRouter re-emits reasoning as a `reasoning_details`
+      # array, not the `reasoning`/`reasoning_content` keys. ruby_llm:
+      # openrouter/chat.rb#format_thinking.
+      def format_thinking(msg : Message) : Hash(String, JSON::Any)
+        result = {} of String => JSON::Any
+        thinking = msg.thinking
+        return result unless thinking && msg.role.assistant?
+
+        details = [] of JSON::Any
+        if text = thinking.text
+          entry = {
+            "type" => JSON::Any.new("reasoning.text"),
+            "text" => JSON::Any.new(text),
+          } of String => JSON::Any
+          if sig = thinking.signature
+            entry["signature"] = JSON::Any.new(sig)
+          end
+          details << JSON::Any.new(entry)
+        elsif sig = thinking.signature
+          details << JSON::Any.new({
+            "type" => JSON::Any.new("reasoning.encrypted"),
+            "data" => JSON::Any.new(sig),
+          } of String => JSON::Any)
+        end
+
+        result["reasoning_details"] = JSON::Any.new(details) unless details.empty?
+        result
       end
     end
   end

@@ -91,14 +91,25 @@ module CrystalLLM
 
     # POSTs the rendered payload to the completion endpoint and parses the
     # response. Mirrors ruby_llm's private `sync_response`.
+    #
+    # Per-request signing: `sign_headers(method, url, body)` is a provider hook that
+    # returns extra request headers computed from the outgoing call (the base returns
+    # `{}`). Bedrock overrides it to compute AWS SigV4 (`Authorization`/`X-Amz-*`).
+    # The signed headers are merged *under* caller `headers` (caller wins on conflict),
+    # mirroring ruby_llm's `req.headers.merge!(signed_headers)` in `signed_post`.
     def sync_response(payload : String, headers : Hash(String, String) = {} of String => String) : Message
-      response = connection.post(completion_url, payload, headers)
+      url = completion_url
+      signed = sign_headers("POST", url, payload).merge(headers)
+      response = connection.post(url, payload, signed)
       parse_completion_response(response)
     end
 
     # Fetches and parses the provider's model list. Mirrors ruby_llm's `list_models`.
+    # The list-models GET is signed the same way (ruby_llm's `signed_get`).
     def list_models : Array(Model::Info)
-      response = connection.get(models_url)
+      url = models_url
+      signed = sign_headers("GET", url, "")
+      response = connection.get(url, signed)
       parse_list_models_response(response, slug, self.class.capabilities)
     end
 
@@ -159,6 +170,20 @@ module CrystalLLM
     # Temperature normalization hook (OpenAI overrides; base is identity).
     def maybe_normalize_temperature(temperature : Float64?, model : Model::Info) : Float64?
       temperature
+    end
+
+    # Per-request signing hook (default no-op). Returns extra headers to merge into a
+    # request, computed from the outgoing method/url/body so the body is available at
+    # signing time. The base returns an empty Hash (no signing). AWS Bedrock overrides
+    # this to compute SigV4 (`Authorization` + `X-Amz-Date`/`X-Amz-Content-Sha256`).
+    #
+    # ruby_llm models this differently — Bedrock overrides `sync_response`/`list_models`
+    # to call `signed_post`/`signed_get`, which merge `sign_headers(...)` into the
+    # request inline. The Crystal port keeps the frozen sync/list pipeline and hoists
+    # the merge there (provider_completion.cr / streaming.cr), so any provider can opt
+    # into per-request signing by overriding this single hook.
+    def sign_headers(method : String, url : String, body : String) : Hash(String, String)
+      {} of String => String
     end
 
     # The provider's capability helper. ruby_llm: `self.class.capabilities`

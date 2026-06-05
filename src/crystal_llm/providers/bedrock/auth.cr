@@ -1,127 +1,102 @@
 # ported from lib/ruby_llm/providers/bedrock/auth.rb @ ruby_llm 1.15.0
 #
-# AWS SigV4 request signing for Bedrock.
+# AWS SigV4 request signing for Bedrock — now LIVE.
 #
-# AUTH DEFERRED (best-effort port): ruby_llm signs every Bedrock request — it overrides
-# `sync_response`/`list_models` to call `signed_post`/`signed_get`, which compute SigV4
-# headers via `sign_headers`. The Crystal port does NOT yet thread per-request signing
-# through the Connection layer (the frozen `sync_response`/`list_models` POST/GET with
-# the static `headers` hash). So:
-#   * `headers` (bedrock.cr) is a best-effort stub — see its note.
-#   * `sign_headers` below is a faithful, self-contained SigV4 v4 computation, ready to
-#     be wired into Connection. It is pure (given method/path/body/timestamp) and is
-#     unit-testable, but is NOT yet invoked by the request pipeline.
-# This is the documented HARD-AUTH deferral. No live calls are made; the unit surface
-# (render_payload/parse_completion_response/build_chunk) is unaffected.
+# ruby_llm signs every Bedrock request: it overrides `sync_response`/`list_models` to
+# call `signed_post`/`signed_get`, which compute SigV4 headers via a hand-rolled
+# `sign_headers` (Digest::SHA256 + OpenSSL::HMAC over the AWS canonical request).
+#
+# The Crystal port threads signing through a single provider hook —
+# `Provider#sign_headers(method, url, body)` (default `{}`), merged into requests by
+# the frozen sync/stream/list pipeline (provider_completion.cr + streaming.cr). Bedrock
+# OVERRIDES that hook here to compute SigV4 with the `awscr-signer` shard rather than
+# re-deriving the canonical-request math: we build an `HTTP::Request` mirroring the
+# outgoing crest call, set its `Host` to the target host, sign it, and lift the
+# `Authorization`/`X-Amz-Date`/`X-Amz-Content-Sha256` (+ `X-Amz-Security-Token`) headers
+# back out to merge onto the real request.
 #
 # Divergences from ruby_llm's auth.rb:
-# - `Digest::SHA256.hexdigest` -> `Digest::SHA256.hexdigest` (Crystal stdlib, same name).
-# - `OpenSSL::HMAC.hexdigest('sha256', ...)` -> `OpenSSL::HMAC.hexdigest(:sha256, ...)`.
-# - `OpenSSL::HMAC.digest('sha256', ...)` (raw bytes) -> `OpenSSL::HMAC.digest(OpenSSL::Algorithm::SHA256, ...)`.
-# - `Time.now.utc.strftime` -> `Time.utc.to_s(format)`.
-# - URI percent-encoding uses `URI.encode_path_segment`/manual encode (Crystal has no
-#   `URI.encode_www_form_component` with identical semantics); the canonicalization is
-#   approximated and clearly marked, since it is not yet on a live path.
+# - The canonical-request construction (canonical_uri/canonical_query_string/uri_encode/
+#   signing_key) is delegated to awscr-signer's `Signers::V4`, so those private helpers
+#   are gone. awscr-signer's `V4::Request` percent-encodes the path the same way (it
+#   refuses query params on the path and wants them on `#query`; the only signed Bedrock
+#   GET — /foundation-models — carries none, so this never bites).
+# - `@config.bedrock_session_token` -> passed to `V4.new`'s `amz_security_token:`, which
+#   adds the `X-Amz-Security-Token` header before signing (so it's part of SignedHeaders,
+#   matching ruby_llm). No manual token header is needed.
+# - Service name: ruby_llm always signs with service "bedrock" (both runtime + control
+#   plane). We keep that to stay byte-for-byte compatible with ruby_llm's signature.
+# - The `Host` header is set explicitly to the URL's host so it is part of the canonical
+#   request's SignedHeaders (awscr-signer signs whatever headers are present; AWS rejects
+#   a SigV4 request whose `host` isn't signed). It matches the crest target host.
 require "json"
-require "digest/sha256"
-require "openssl"
-require "openssl/hmac"
+require "http/request"
+require "awscr-signer"
 require "../bedrock"
 
 module CrystalLLM
   module Providers
     class Bedrock < Provider
-      # Computes the SigV4 `Authorization` (+ x-amz-*) headers for a request.
-      # `now` is injectable for deterministic testing (defaults to Time.utc).
-      def sign_headers(method : String, path : String, body : String,
-                       base_url : String = api_base, now : Time = Time.utc) : Hash(String, String)
-        amz_date = now.to_s("%Y%m%dT%H%M%SZ")
-        date_stamp = now.to_s("%Y%m%d")
+      # Computes the SigV4 `Authorization` (+ X-Amz-*) headers for a request and returns
+      # them as a plain Hash to merge onto the outgoing crest request. `url` may be a
+      # path (resolved against `api_base`) or a full URL (the control-plane models host);
+      # the signed `Host` is derived from whichever host the request actually targets.
+      def sign_headers(method : String, url : String, body : String) : Hash(String, String)
+        target = signing_target(url)
+        host = URI.parse(target).host || ""
 
-        uri = URI.parse(path)
-        canonical_uri = canonical_uri(uri.path)
-        canonical_query = canonical_query_string(uri.query)
-        payload_hash = Digest::SHA256.hexdigest(body)
+        request = HTTP::Request.new(method.upcase, signing_resource(target), body: body)
+        # Sign `host` so it lands in SignedHeaders (AWS requires it). Matches the crest
+        # target host — crest derives Host from the request URL, which is the same host.
+        request.headers["Host"] = host
 
-        host = URI.parse(base_url).host || ""
-        headers = {
-          "host"                 => host,
-          "x-amz-content-sha256" => payload_hash,
-          "x-amz-date"           => amz_date,
-        }
-        if token = @config.bedrock_session_token
-          headers["x-amz-security-token"] = token
+        signer = Awscr::Signer::Signers::V4.new(
+          service: bedrock_signing_service,
+          region: @config.bedrock_region || "",
+          aws_access_key: @config.bedrock_api_key || "",
+          aws_secret_key: @config.bedrock_secret_key || "",
+          amz_security_token: @config.bedrock_session_token
+        )
+        # Mutates `request.headers`, adding X-Amz-Date, X-Amz-Content-Sha256,
+        # Authorization (+ X-Amz-Security-Token when a session token was given).
+        signer.sign(request)
+
+        signed = {
+          "Authorization" => request.headers["Authorization"],
+          "X-Amz-Date"    => request.headers["X-Amz-Date"],
+          "Content-Type"  => "application/json",
+        } of String => String
+
+        if sha = request.headers["X-Amz-Content-Sha256"]?
+          signed["X-Amz-Content-Sha256"] = sha
+        end
+        if token = request.headers["X-Amz-Security-Token"]?
+          signed["X-Amz-Security-Token"] = token
         end
 
-        sorted_keys = headers.keys.sort!
-        signed_headers = sorted_keys.join(";")
-        canonical_headers = sorted_keys.map { |key| "#{key}:#{headers[key].strip}\n" }.join
-
-        canonical_request = [
-          method,
-          canonical_uri,
-          canonical_query,
-          canonical_headers,
-          signed_headers,
-          payload_hash,
-        ].join("\n")
-
-        region = @config.bedrock_region
-        credential_scope = "#{date_stamp}/#{region}/bedrock/aws4_request"
-        string_to_sign = [
-          "AWS4-HMAC-SHA256",
-          amz_date,
-          credential_scope,
-          Digest::SHA256.hexdigest(canonical_request),
-        ].join("\n")
-
-        signature = OpenSSL::HMAC.hexdigest(:sha256, signing_key(date_stamp), string_to_sign)
-
-        result = {
-          "X-Amz-Date"           => amz_date,
-          "X-Amz-Content-Sha256" => payload_hash,
-          "Authorization"        => "AWS4-HMAC-SHA256 Credential=#{@config.bedrock_api_key}/#{credential_scope}, " \
-                             "SignedHeaders=#{signed_headers}, Signature=#{signature}",
-          "Content-Type" => "application/json",
-        }
-        if token = @config.bedrock_session_token
-          result["X-Amz-Security-Token"] = token
-        end
-        result
+        signed
       end
 
-      private def canonical_query_string(raw_query : String?) : String
-        return "" if raw_query.nil? || raw_query.empty?
-
-        params = URI::Params.parse(raw_query)
-        pairs = [] of Tuple(String, String)
-        params.each { |key, value| pairs << {key, value} }
-        pairs.sort_by!(&.first)
-        pairs.map { |key, value| "#{uri_encode(key)}=#{uri_encode(value)}" }.join("&")
+      # ruby_llm signs Bedrock with the "bedrock" service for both planes.
+      private def bedrock_signing_service : String
+        "bedrock"
       end
 
-      private def canonical_uri(path : String?) : String
-        return "/" if path.nil? || path.empty?
-
-        segments = path.split("/", -1).map { |segment| uri_encode(segment) }
-        canonical = segments.join("/")
-        canonical.starts_with?("/") ? canonical : "/#{canonical}"
+      # Resolves `url` (a path or a full URL) to the full URL whose host we sign against.
+      # A path is taken to target the runtime `api_base`; a full URL (the control-plane
+      # models endpoint) is used as-is.
+      private def signing_target(url : String) : String
+        return url if url.starts_with?("http://") || url.starts_with?("https://")
+        "#{api_base.chomp('/')}/#{url.lchop('/')}"
       end
 
-      # Approximation of ruby_llm's `URI.encode_www_form_component(...).gsub('+','%20')`.
-      private def uri_encode(text : String) : String
-        URI.encode_www_form(text).gsub("+", "%20").gsub("%7E", "~")
-      end
-
-      private def signing_key(date_stamp : String) : Bytes
-        k_date = hmac("AWS4#{@config.bedrock_secret_key}".to_slice, date_stamp.to_slice)
-        k_region = hmac(k_date, (@config.bedrock_region || "").to_slice)
-        k_service = hmac(k_region, "bedrock".to_slice)
-        hmac(k_service, "aws4_request".to_slice)
-      end
-
-      private def hmac(key : Bytes, data : Bytes) : Bytes
-        OpenSSL::HMAC.digest(OpenSSL::Algorithm::SHA256, key, data)
+      # The path+query portion awscr-signer signs (it derives the canonical path itself).
+      private def signing_resource(target : String) : String
+        uri = URI.parse(target)
+        path = uri.path
+        path = "/" if path.nil? || path.empty?
+        query = uri.query
+        query && !query.empty? ? "#{path}?#{query}" : path
       end
     end
   end

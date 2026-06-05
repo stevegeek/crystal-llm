@@ -13,11 +13,11 @@
 #   structured-output shape), reading with `as_h?`/`dig?` rather than symbol keys.
 # - `thinking` is a `Thinking::Config?`; `build_thinking_payload` reads `.budget`.
 #   When enabled but no budget is set it raises (ruby_llm parity).
-# - Message has no `thinking` keyword yet (deferred — message.cr): thinking text/
-#   signature ARE extracted from response blocks but NOT attached to the Message;
-#   thinking content blocks are NOT prepended to outgoing assistant messages (the
-#   `thinking_enabled` round-trip path is a no-op until Message#thinking lands).
-#   thinking_tokens ARE wired into the Message.
+# - Thinking round-trip is wired: thinking text + signature are extracted from
+#   response content blocks and attached to the Message (`Thinking.build`); on the
+#   outbound side, `format_message` prepends a `thinking`/`redacted_thinking` block
+#   to assistant messages that carry a thinking signature when thinking is enabled
+#   (multi-turn extended thinking). thinking_tokens are wired too.
 # - `response.body` is a raw String (Crest); JSON.parse it here.
 require "json"
 require "../anthropic"
@@ -135,12 +135,11 @@ module CrystalLLM
         content_blocks = data["content"]?.try(&.as_a?) || [] of JSON::Any
 
         text_content = extract_text_content(content_blocks)
-        # thinking text/signature ARE extracted for parity but not attached (deferred).
-        _thinking_content = extract_thinking_content(content_blocks)
-        _thinking_signature = extract_thinking_signature(content_blocks)
+        thinking_content = extract_thinking_content(content_blocks)
+        thinking_signature = extract_thinking_signature(content_blocks)
         tool_use_blocks = Tools.find_tool_uses(content_blocks)
 
-        build_message(data, text_content, tool_use_blocks, response)
+        build_message(data, text_content, thinking_content, thinking_signature, tool_use_blocks, response)
       end
 
       def extract_text_content(blocks : Array(JSON::Any)) : String?
@@ -179,6 +178,7 @@ module CrystalLLM
       end
 
       def build_message(data : JSON::Any, content : String?,
+                        thinking : String?, thinking_signature : String?,
                         tool_use_blocks : Array(JSON::Any), response : Crest::Response) : Message
         usage = data["usage"]?.try(&.as_h?) || {} of String => JSON::Any
 
@@ -193,6 +193,7 @@ module CrystalLLM
         Message.new(
           role: Role::Assistant,
           content: content,
+          thinking: Thinking.build(text: thinking, signature: thinking_signature),
           tool_calls: Tools.parse_tool_calls(JSON::Any.new(tool_use_blocks)),
           input_tokens: int_at(usage["input_tokens"]?),
           output_tokens: int_at(usage["output_tokens"]?),
@@ -231,19 +232,28 @@ module CrystalLLM
         messages.map { |msg| format_message(msg, nil) }
       end
 
-      # Formats one message into an Anthropic content-block message.
+      # Formats one message into an Anthropic content-block message. When thinking
+      # is enabled, an assistant message that carries a thinking signature gets a
+      # leading `thinking`/`redacted_thinking` block (multi-turn extended thinking).
       def format_message(msg : Message, thinking : Thinking::Config?) : JSON::Any
+        thinking_enabled = thinking.try(&.enabled?) || false
+
         if msg.tool_call?
-          format_tool_call_message(msg)
+          format_tool_call_message(msg, thinking_enabled)
         elsif msg.tool_result?
           Tools.format_tool_result(msg)
         else
-          format_basic_message(msg)
+          format_basic_message(msg, thinking_enabled)
         end
       end
 
-      private def format_basic_message(msg : Message) : JSON::Any
+      private def format_basic_message(msg : Message, thinking_enabled : Bool) : JSON::Any
         content_blocks = [] of JSON::Any
+        if msg.role.assistant? && thinking_enabled
+          if block = build_thinking_block(msg.thinking)
+            content_blocks << block
+          end
+        end
         append_formatted_content(content_blocks, msg.content)
 
         JSON::Any.new({
@@ -252,18 +262,19 @@ module CrystalLLM
         } of String => JSON::Any)
       end
 
-      private def format_tool_call_message(msg : Message) : JSON::Any
+      private def format_tool_call_message(msg : Message, thinking_enabled : Bool) : JSON::Any
         content = msg.content
         if content.is_a?(Content::Raw)
           value = content.value
           blocks = value.as_a? || [value]
+          blocks = prepend_thinking_block(blocks, msg, thinking_enabled)
           return JSON::Any.new({
             "role"    => JSON::Any.new("assistant"),
             "content" => JSON::Any.new(blocks),
           } of String => JSON::Any)
         end
 
-        content_blocks = [] of JSON::Any
+        content_blocks = prepend_thinking_block([] of JSON::Any, msg, thinking_enabled)
         text = content.is_a?(String) ? content : content.try(&.to_s)
         content_blocks << Media.format_text(text) if text && !text.empty?
 
@@ -277,6 +288,39 @@ module CrystalLLM
           "role"    => JSON::Any.new("assistant"),
           "content" => JSON::Any.new(content_blocks),
         } of String => JSON::Any)
+      end
+
+      # Unshifts a thinking block onto `content_blocks` when thinking is enabled and
+      # the message carries thinking. Mirrors ruby_llm's `prepend_thinking_block`.
+      private def prepend_thinking_block(content_blocks : Array(JSON::Any), msg : Message,
+                                         thinking_enabled : Bool) : Array(JSON::Any)
+        return content_blocks unless thinking_enabled
+        if block = build_thinking_block(msg.thinking)
+          content_blocks.unshift(block)
+        end
+        content_blocks
+      end
+
+      # A `thinking` block (text + optional signature) or a `redacted_thinking` block
+      # (signature only). Returns nil when there is no thinking to send.
+      private def build_thinking_block(thinking : Thinking?) : JSON::Any?
+        return nil unless thinking
+
+        if text = thinking.text
+          block = {
+            "type"     => JSON::Any.new("thinking"),
+            "thinking" => JSON::Any.new(text),
+          } of String => JSON::Any
+          if sig = thinking.signature
+            block["signature"] = JSON::Any.new(sig)
+          end
+          JSON::Any.new(block)
+        elsif sig = thinking.signature
+          JSON::Any.new({
+            "type" => JSON::Any.new("redacted_thinking"),
+            "data" => JSON::Any.new(sig),
+          } of String => JSON::Any)
+        end
       end
 
       private def append_formatted_content(content_blocks : Array(JSON::Any),

@@ -18,7 +18,11 @@ module CrystalLLM
       accumulator = StreamAccumulator.new
       parser = SSE.new
 
-      connection.post_stream(stream_url, payload, headers) do |response|
+      url = stream_url
+      # Per-request signing hook (default no-op; Bedrock computes SigV4). Caller
+      # `headers` win on conflict, matching the sync path's merge order.
+      signed = sign_headers("POST", url, payload).merge(headers)
+      connection.post_stream(url, payload, signed) do |response|
         response.body_io.each_line do |line|
           parser.feed("#{line}\n") do |type, data|
             next if data == "[DONE]"

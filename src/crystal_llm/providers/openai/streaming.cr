@@ -7,8 +7,10 @@
 # Divergences:
 # - tool-call deltas are parsed with `parse_arguments: false` so the streaming
 #   accumulator merges them (see tools.cr's note on the typed-arguments divergence).
-# - thinking text/signature are extracted but not attached to the Chunk (Message#thinking
-#   deferred); reasoning_tokens ARE wired. `parse_streaming_error` is ported for the
+# - thinking text (from content blocks or `delta.reasoning_content`/`reasoning`) and
+#   signature (`delta.reasoning_signature`) ARE attached to the Chunk via
+#   `Thinking.build`; the StreamAccumulator folds them into the final Message.
+#   reasoning_tokens ARE wired. `parse_streaming_error` is ported for the
 #   streaming-error-status mapping (used once the stream loop surfaces errors).
 require "json"
 require "../openai"
@@ -25,12 +27,18 @@ module CrystalLLM
         delta = data.dig?("choices", 0, "delta").try(&.as_h?) || {} of String => JSON::Any
 
         content_source = delta["content"]? || data.dig?("choices", 0, "message", "content")
-        content, _thinking_from_blocks = extract_content_and_thinking(content_source)
+        content, thinking_from_blocks = extract_content_and_thinking(content_source)
 
         Chunk.new(
           role: Role::Assistant,
           model_id: data["model"]?.try(&.as_s?),
           content: content,
+          thinking: Thinking.build(
+            text: thinking_from_blocks ||
+                  delta["reasoning_content"]?.try(&.as_s?) ||
+                  delta["reasoning"]?.try(&.as_s?),
+            signature: delta["reasoning_signature"]?.try(&.as_s?)
+          ),
           tool_calls: parse_tool_calls(delta["tool_calls"]?, parse_arguments: false),
           input_tokens: input_tokens(usage),
           output_tokens: output_tokens(usage),

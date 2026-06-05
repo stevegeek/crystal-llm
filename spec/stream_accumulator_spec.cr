@@ -77,6 +77,46 @@ describe CrystalLLM::StreamAccumulator do
     end
   end
 
+  describe "structured thinking (Chunk#thinking)" do
+    it "accumulates thinking text across chunks and keeps the first signature" do
+      accumulator = CrystalLLM::StreamAccumulator.new
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        thinking: CrystalLLM::Thinking.build(text: "Let me ")
+      ))
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        thinking: CrystalLLM::Thinking.build(text: "think.")
+      ))
+      # signature arrives on a later (signature_delta-style) chunk
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: "answer",
+        thinking: CrystalLLM::Thinking.build(signature: "sig-A")
+      ))
+      # a second signature must NOT overwrite the first
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        thinking: CrystalLLM::Thinking.build(signature: "sig-B")
+      ))
+
+      thinking = accumulator.thinking.should_not be_nil
+      thinking.text.should eq("Let me think.")
+      thinking.signature.should eq("sig-A")
+
+      message = accumulator.to_message(nil)
+      msg_thinking = message.thinking.should_not be_nil
+      msg_thinking.text.should eq("Let me think.")
+      msg_thinking.signature.should eq("sig-A")
+      message.content.should eq("answer")
+    end
+
+    it "leaves Message#thinking nil when no chunk carries thinking" do
+      accumulator = CrystalLLM::StreamAccumulator.new
+      accumulator.add(CrystalLLM::Chunk.new(role: :assistant, content: "hi"))
+      accumulator.to_message(nil).thinking.should be_nil
+    end
+  end
+
   describe "#to_message" do
     it "returns an assistant message with nil content when nothing accumulated" do
       message = CrystalLLM::StreamAccumulator.new.to_message(nil)

@@ -61,6 +61,45 @@ describe CrystalLLM::Message do
     end
   end
 
+  describe "#thinking" do
+    it "is nil when no thinking is provided" do
+      CrystalLLM::Message.new(role: :assistant, content: "hi").thinking.should be_nil
+    end
+
+    it "exposes a Thinking value passed via the thinking: kwarg" do
+      thinking = CrystalLLM::Thinking.new(text: "reasoning", signature: "sig")
+      message = CrystalLLM::Message.new(role: :assistant, content: "hi", thinking: thinking)
+      message.thinking.should_not be_nil
+      message.thinking.try(&.text).should eq("reasoning")
+      message.thinking.try(&.signature).should eq("sig")
+    end
+  end
+
+  describe "#to_h" do
+    it "includes thinking text + signature and drops nils" do
+      thinking = CrystalLLM::Thinking.new(text: "because", signature: "sig-1")
+      message = CrystalLLM::Message.new(
+        role: :assistant, content: "answer", thinking: thinking,
+        input_tokens: 3, output_tokens: 4
+      )
+      h = message.to_h
+      h[:role].should eq(CrystalLLM::Role::Assistant)
+      h[:content].should eq("answer")
+      h[:thinking].should eq("because")
+      h[:thinking_signature].should eq("sig-1")
+      h[:input_tokens].should eq(3)
+      h[:output_tokens].should eq(4)
+      # tool_call_id is nil → omitted (compact)
+      h.has_key?(:tool_call_id).should be_false
+    end
+
+    it "omits thinking keys when there is no thinking" do
+      h = CrystalLLM::Message.new(role: :user, content: "hi").to_h
+      h.has_key?(:thinking).should be_false
+      h.has_key?(:thinking_signature).should be_false
+    end
+  end
+
   # Parity quick win: Message#cost (mirrors ruby_llm's
   # `cost(model:) = Cost.new(tokens:, model: model || model_info)`).
   describe "#cost" do

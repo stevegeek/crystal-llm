@@ -1,11 +1,57 @@
 require "../spec_helper"
 require "../../src/crystal_llm/providers/vertexai"
+require "openssl_ext"
+require "base64"
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
     HTTP::Client::Response.new(status, body: body),
     Crest::Request.new(:get, "http://example.test")
   )
+end
+
+# A throwaway RSA key + service-account JSON, generated once per run (NO real GCP key).
+private RSA_KEY = OpenSSL::PKey::RSA.new(2048)
+
+private def sa_private_pem : String
+  RSA_KEY.to_pem
+end
+
+private def sa_public_pem : String
+  RSA_KEY.public_key.to_pem
+end
+
+private def service_account_json(token_uri : String = "https://oauth2.googleapis.com/token") : String
+  {
+    "type"         => "service_account",
+    "client_email" => "svc@my-project.iam.gserviceaccount.com",
+    "private_key"  => sa_private_pem,
+    "token_uri"    => token_uri,
+  }.to_json
+end
+
+# A VertexAI subclass that stubs the network token exchange: it records the form body it
+# was asked to POST and returns a canned token response (NO live GCP call).
+private class StubVertexAI < CrystalLLM::Providers::VertexAI
+  getter requested_token_uri : String?
+  getter requested_form_body : String?
+  property canned_response : String = %({"access_token":"ya29.minted-token","expires_in":3600,"token_type":"Bearer"})
+  getter request_token_calls : Int32 = 0
+
+  protected def request_token(token_uri : String, form_body : String) : String
+    @requested_token_uri = token_uri
+    @requested_form_body = form_body
+    @request_token_calls += 1
+    @canned_response
+  end
+end
+
+private def stub_vertexai(key : String = service_account_json) : StubVertexAI
+  config = CrystalLLM::Configuration.new
+  config.vertexai_project_id = "my-project"
+  config.vertexai_location = "us-central1"
+  config.vertexai_service_account_key = key
+  StubVertexAI.new(config)
 end
 
 private def configured_vertexai : CrystalLLM::Providers::VertexAI
@@ -68,8 +114,12 @@ describe CrystalLLM::Providers::VertexAI do
       CrystalLLM::Providers::VertexAI.new(config).api_base.should eq("https://aiplatform.googleapis.com/v1beta1")
     end
 
-    it "emits a best-effort Authorization header (auth deferred)" do
-      configured_vertexai.headers["Authorization"].should eq("Bearer test")
+    it "raises a clear ConfigurationError when the service-account key is not valid JSON" do
+      # `configured_vertexai` sets the key to the non-JSON string "test"; `headers`
+      # now mints a real OAuth bearer, so it must reject the bad key rather than emit it.
+      expect_raises(CrystalLLM::ConfigurationError, /not valid JSON/) do
+        configured_vertexai.headers
+      end
     end
   end
 
@@ -363,6 +413,122 @@ describe CrystalLLM::Providers::VertexAI do
       pricing = CrystalLLM::Model::Pricing.new(caps.pricing_for("gemini-2.0-flash"))
       pricing.text_tokens.input.should eq(0.10)
       pricing.text_tokens.output.should eq(0.40)
+    end
+  end
+
+  describe "service-account OAuth auth" do
+    describe "#service_account" do
+      it "parses the configured JSON key" do
+        sa = stub_vertexai.service_account
+        sa.client_email.should eq("svc@my-project.iam.gserviceaccount.com")
+        sa.private_key.should eq(sa_private_pem)
+        sa.token_uri.should eq("https://oauth2.googleapis.com/token")
+      end
+
+      it "accepts a filesystem path to the JSON key (convenience divergence)" do
+        path = File.tempname("vertexai-sa", ".json")
+        File.write(path, service_account_json)
+        begin
+          stub_vertexai(key: path).service_account.client_email
+            .should eq("svc@my-project.iam.gserviceaccount.com")
+        ensure
+          File.delete(path)
+        end
+      end
+
+      it "raises a ConfigurationError when the key is missing" do
+        config = CrystalLLM::Configuration.new
+        config.vertexai_project_id = "my-project"
+        config.vertexai_location = "us-central1"
+        provider = CrystalLLM::Providers::VertexAI.new(config)
+        expect_raises(CrystalLLM::ConfigurationError, /not set/) do
+          provider.access_token
+        end
+      end
+
+      it "raises when required service-account fields are absent" do
+        bad = {"type" => "service_account"}.to_json
+        expect_raises(CrystalLLM::ConfigurationError, /missing required fields/) do
+          stub_vertexai(key: bad).service_account
+        end
+      end
+    end
+
+    describe "#build_jwt_assertion" do
+      it "builds an RS256 JWT with the right header + claims that verifies against the public key" do
+        now = Time.utc(2026, 6, 4, 12, 0, 0)
+        provider = stub_vertexai
+        sa = provider.service_account
+        assertion = provider.build_jwt_assertion(sa, now: now)
+
+        # Header: RS256 + typ JWT.
+        header_b64 = assertion.split('.').first
+        header = JSON.parse(Base64.decode_string(header_b64))
+        header["alg"].as_s.should eq("RS256")
+        header["typ"].as_s.should eq("JWT")
+
+        # Verifies (RS256) against the public key and decodes back to the claims.
+        # validate: false — `now` is a fixed past instant, so we assert claims, not freshness.
+        payload, _ = JWT.decode(assertion, sa_public_pem, JWT::Algorithm::RS256, validate: false)
+        payload["iss"].as_s.should eq("svc@my-project.iam.gserviceaccount.com")
+        payload["aud"].as_s.should eq("https://oauth2.googleapis.com/token")
+        payload["scope"].as_s.should eq(
+          "https://www.googleapis.com/auth/cloud-platform " \
+          "https://www.googleapis.com/auth/generative-language.retriever"
+        )
+        payload["iat"].as_i64.should eq(now.to_unix)
+        payload["exp"].as_i64.should eq((now + 1.hour).to_unix)
+      end
+
+      it "rejects tampering (signature verification fails for a different key)" do
+        provider = stub_vertexai
+        assertion = provider.build_jwt_assertion(now: Time.utc)
+        other_pub = OpenSSL::PKey::RSA.new(2048).public_key.to_pem
+        expect_raises(JWT::VerificationError) do
+          JWT.decode(assertion, other_pub, JWT::Algorithm::RS256)
+        end
+      end
+    end
+
+    describe "#access_token (token exchange)" do
+      it "POSTs the jwt-bearer grant + assertion to the token endpoint and returns the minted token" do
+        provider = stub_vertexai
+        token = provider.access_token
+        token.should eq("ya29.minted-token")
+
+        provider.requested_token_uri.should eq("https://oauth2.googleapis.com/token")
+
+        # The POST body is form-encoded: grant_type=<jwt-bearer>&assertion=<jwt>.
+        body = provider.requested_form_body
+        raise "no form body" unless body
+        params = URI::Params.parse(body)
+        params["grant_type"].should eq("urn:ietf:params:oauth:grant-type:jwt-bearer")
+
+        # The assertion is the signed JWT and verifies against the public key.
+        assertion = params["assertion"]
+        payload, _ = JWT.decode(assertion, sa_public_pem, JWT::Algorithm::RS256)
+        payload["iss"].as_s.should eq("svc@my-project.iam.gserviceaccount.com")
+      end
+
+      it "caches the token (no second exchange while valid)" do
+        provider = stub_vertexai
+        provider.access_token.should eq("ya29.minted-token")
+        provider.access_token.should eq("ya29.minted-token")
+        provider.request_token_calls.should eq(1)
+      end
+
+      it "raises UnauthorizedError when the response has no access_token" do
+        provider = stub_vertexai
+        provider.canned_response = %({"error":"invalid_grant"})
+        expect_raises(CrystalLLM::UnauthorizedError, /no access_token/) do
+          provider.access_token
+        end
+      end
+
+      it "emits the minted bearer in #headers" do
+        provider = stub_vertexai
+        provider.headers["Authorization"].should eq("Bearer ya29.minted-token")
+      end
     end
   end
 end

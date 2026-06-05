@@ -21,8 +21,25 @@
 # - Rich attachment media formatting (azure/media.rb format_image / image/audio/text
 #   parts) is DEFERRED with the attachment-provider work; chat reuses OpenAI::Media's
 #   text/Raw/Hash content paths (the only ones the chat path needs today).
-# - `azure_ai_auth_token` hard-auth path: the property is added and the Bearer
-#   fallback in `headers` is ported, but token acquisition/refresh is out of scope.
+# - `azure_ai_auth_token` pre-minted path: ruby_llm's only AAD path. The caller
+#   supplies the token; `headers` emits `Authorization: Bearer <token>`.
+#
+# AAD client-credentials flow (DIVERGENCE — NOT in ruby_llm 1.15.0):
+#   ruby_llm only consumes a *pre-minted* azure_ai_auth_token; it never acquires one.
+#   The parity audit flags "Azure never acquires an AAD token" as a critical gap, so
+#   this port adds the acquisition. When azure_tenant_id / azure_client_id /
+#   azure_client_secret are all configured, `headers` mints a bearer token via the
+#   OAuth2 client-credentials grant:
+#     POST https://login.microsoftonline.com/<tenant>/oauth2/v2.0/token
+#       grant_type=client_credentials
+#       client_id=<id>&client_secret=<secret>
+#       scope=https://cognitiveservices.azure.com/.default
+#   The access_token is cached on the provider instance until ~expires_in seconds
+#   (minus a 60s safety skew); a refresh re-POSTs once the cache lapses. The api-key
+#   header path stays the *default* — AAD only kicks in when no api-key is set AND the
+#   three AAD props are present. The raw HTTP POST is isolated in `post_aad_token`
+#   (an overridable seam) so the unit suite exercises URL/form shaping + caching
+#   without any live Azure / Microsoft-login call.
 #
 # Divergences from ruby_llm:
 # - ruby_llm builds `azure_base_parts` lazily into an ivar (`@azure_base_parts ||=`).
@@ -45,8 +62,16 @@ module CrystalLLM
   class Configuration
     property azure_api_base : String? = nil
     property azure_api_key : String? = nil
-    # Bearer fallback when no api-key is set (token acquisition deferred — see header).
+    # Pre-minted Bearer token (ruby_llm's only AAD path: the caller supplies the token).
     property azure_ai_auth_token : String? = nil
+
+    # --- AAD client-credentials config (DIVERGENCE: not present in ruby_llm 1.15.0) ---
+    # When all three are set, the provider mints (and caches) an AAD bearer token via the
+    # OAuth2 client-credentials grant instead of requiring a pre-minted azure_ai_auth_token.
+    # See providers/azure.cr header for the rationale.
+    property azure_tenant_id : String? = nil
+    property azure_client_id : String? = nil
+    property azure_client_secret : String? = nil
   end
 
   module Providers
@@ -59,14 +84,106 @@ module CrystalLLM
         @config.azure_api_base || ""
       end
 
+      # Auth header precedence (mirrors ruby_llm + the AAD divergence):
+      #   1. api-key header        — when azure_api_key is set (the DEFAULT path)
+      #   2. AAD client-credentials — when the three AAD props are set (mint + cache)
+      #   3. pre-minted Bearer      — when azure_ai_auth_token is set
+      # ruby_llm only has (1) and (3); (2) is this port's addition (see file header).
       def headers : Hash(String, String)
         h = {} of String => String
         if key = @config.azure_api_key
           h["api-key"] = key
+        elsif aad_configured?
+          h["Authorization"] = "Bearer #{aad_access_token}"
         elsif token = @config.azure_ai_auth_token
           h["Authorization"] = "Bearer #{token}"
         end
         h
+      end
+
+      # ---- AAD client-credentials flow (DIVERGENCE — see file header) ----
+
+      AAD_TOKEN_HOST = "https://login.microsoftonline.com"
+      AAD_SCOPE      = "https://cognitiveservices.azure.com/.default"
+      # Refresh this many seconds *before* the reported expiry, to avoid handing out a
+      # token that lapses in flight.
+      AAD_EXPIRY_SKEW = 60
+
+      # Cached token + the monotonic instant it stops being usable. Lives on the
+      # provider instance (NOT on Configuration — Configuration ivars are all public
+      # options, see PORTING.md). A nil token means "not yet fetched".
+      @aad_token : String? = nil
+      @aad_token_expires_at : Time? = nil
+
+      # True when the AAD client-credentials grant is fully configured.
+      def aad_configured? : Bool
+        !@config.azure_tenant_id.nil? &&
+          !@config.azure_client_id.nil? &&
+          !@config.azure_client_secret.nil?
+      end
+
+      # The OAuth2 token endpoint for the configured tenant.
+      def aad_token_url : String
+        tenant = @config.azure_tenant_id
+        raise ConfigurationError.new("Missing configuration for Azure AAD: azure_tenant_id") if tenant.nil?
+        "#{AAD_TOKEN_HOST}/#{tenant}/oauth2/v2.0/token"
+      end
+
+      # The client-credentials grant form body. crest serializes this as
+      # application/x-www-form-urlencoded (the grant's required content type).
+      def aad_token_form : Hash(String, String)
+        client_id = @config.azure_client_id
+        client_secret = @config.azure_client_secret
+        raise ConfigurationError.new("Missing configuration for Azure AAD: azure_client_id") if client_id.nil?
+        raise ConfigurationError.new("Missing configuration for Azure AAD: azure_client_secret") if client_secret.nil?
+
+        {
+          "grant_type"    => "client_credentials",
+          "client_id"     => client_id,
+          "client_secret" => client_secret,
+          "scope"         => AAD_SCOPE,
+        }
+      end
+
+      # Returns a valid cached AAD bearer token, minting a fresh one when the cache is
+      # empty or lapsed. The single fetch + cache-update is what `headers` relies on.
+      def aad_access_token : String
+        cached = @aad_token
+        expires_at = @aad_token_expires_at
+        if cached && expires_at && Time.utc < expires_at
+          return cached
+        end
+
+        refresh_aad_token!
+      end
+
+      # POSTs the client-credentials grant, parses access_token + expires_in, and
+      # caches the result. Returns the new token.
+      private def refresh_aad_token! : String
+        response = post_aad_token(aad_token_url, aad_token_form)
+        body = JSON.parse(response.body)
+
+        token = body["access_token"]?.try(&.as_s?)
+        if token.nil? || token.empty?
+          raise ConfigurationError.new("Azure AAD token response had no access_token")
+        end
+
+        # expires_in is seconds-from-now (JSON number); default to a conservative 3600
+        # when absent. Apply the safety skew so we refresh before the real expiry.
+        expires_in = body["expires_in"]?.try(&.as_i64?) || 3600_i64
+        lifetime = expires_in - AAD_EXPIRY_SKEW
+        lifetime = 0_i64 if lifetime < 0
+
+        @aad_token = token
+        @aad_token_expires_at = Time.utc + lifetime.seconds
+        token
+      end
+
+      # The single HTTP seam for the AAD token request, isolated so the unit suite can
+      # override it with a canned response (no live Microsoft-login call). Production
+      # POSTs the form-encoded grant via crest.
+      protected def post_aad_token(url : String, form : Hash(String, String)) : Crest::Response
+        Crest.post(url, form: form, read_timeout: @config.request_timeout.seconds)
       end
 
       # ruby_llm: `%i[azure_api_base]` — the task pins this to the two primary keys.
@@ -87,17 +204,29 @@ module CrystalLLM
 
       # Azure's configured? is an OR over auth methods (api_base AND (api_key OR
       # auth_token)) — not the base's "all requirements present" AND. Overridden to
-      # match ruby_llm's Azure.configured?.
+      # match ruby_llm's Azure.configured?. DIVERGENCE: a complete AAD
+      # client-credentials triple (tenant/client_id/client_secret) also satisfies the
+      # auth requirement, since the provider mints a token from it.
       def self.configured?(config : Configuration) : Bool
         !config.azure_api_base.nil? &&
-          (!config.azure_api_key.nil? || !config.azure_ai_auth_token.nil?)
+          (!config.azure_api_key.nil? ||
+            !config.azure_ai_auth_token.nil? ||
+            aad_configured?(config))
+      end
+
+      # Class-level mirror of the instance `aad_configured?` (used by `configured?`,
+      # which is a class method).
+      def self.aad_configured?(config : Configuration) : Bool
+        !config.azure_tenant_id.nil? &&
+          !config.azure_client_id.nil? &&
+          !config.azure_client_secret.nil?
       end
 
       private def ensure_configured! : Nil
         missing = [] of String
         missing << "azure_api_base" if @config.azure_api_base.nil?
-        if @config.azure_api_key.nil? && @config.azure_ai_auth_token.nil?
-          missing << "azure_api_key or azure_ai_auth_token"
+        if @config.azure_api_key.nil? && @config.azure_ai_auth_token.nil? && !aad_configured?
+          missing << "azure_api_key, azure_ai_auth_token, or AAD client credentials"
         end
         return if missing.empty?
 

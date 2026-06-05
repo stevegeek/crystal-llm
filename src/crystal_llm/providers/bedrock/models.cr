@@ -5,10 +5,15 @@
 #
 # Divergences:
 # - `response.body` is a raw String (Crest); JSON.parse it here.
-# - ruby_llm's `list_models` issues a *signed* GET to `models_api_base`; the frozen
-#   pipeline's `list_models` GETs `models_url` against `api_base`. The signed/host
-#   override is DEFERRED with the auth wiring (see bedrock/auth.cr). `models_api_base`
-#   is ported for when that lands. `parse_list_models_response` itself is exact.
+# - ruby_llm's `list_models` issues a *signed* GET to `models_api_base` (the bedrock
+#   CONTROL-PLANE host, distinct from the runtime host used for chat). The frozen
+#   pipeline's `list_models` GETs `models_url` against the connection's `api_base`
+#   (the runtime host) and merges `sign_headers("GET", models_url, "")`. To route the
+#   list to the control plane WITHOUT a second Connection, `models_url` returns the
+#   FULL control-plane URL — `Connection#full_url` passes an absolute URL through
+#   unchanged, and `sign_headers` derives the signed `Host` from it. So the GET hits
+#   `https://bedrock.<region>.amazonaws.com/foundation-models`, signed for that host,
+#   exactly like ruby_llm's `signed_get(models_api_base, '/foundation-models')`.
 # - Model::Info built via `.build` (the native-value keyword constructor); modalities
 #   wrapped in Model::Modalities, pricing left empty (`Model::Pricing.new`).
 # - `@config.bedrock_region` read directly (ruby_llm threads it through the mixin).
@@ -22,11 +27,14 @@ module CrystalLLM
     class Bedrock < Provider
       REGION_PREFIXES = %w[global us eu ap sa ca me af il]
 
+      # The FULL control-plane URL (not a bare path): an absolute URL routes the
+      # frozen `list_models` GET to the bedrock control plane (not the runtime host)
+      # and tells `sign_headers` which Host to sign. See the file header for why.
       def models_url : String
-        "/foundation-models"
+        "#{models_api_base}/foundation-models"
       end
 
-      # AUTH/HOST DEFERRED: the control-plane host for the models endpoint.
+      # The control-plane host for the models endpoint (ruby_llm's `models_api_base`).
       def models_api_base : String
         "https://bedrock.#{@config.bedrock_region}.amazonaws.com"
       end

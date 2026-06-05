@@ -19,12 +19,13 @@
 #   frozen hook signature but only wires the plain responseMimeType envelope when a
 #   schema is present — see chat.cr).
 #
-# DEFERRED — AUTH (hard): ruby_llm authenticates via the googleauth gem (Application
-# Default Credentials / service-account key -> OAuth2 bearer token, SCOPES). That OAuth
-# token-minting is NOT ported here (no live calls in the unit suite anyway). `headers`
-# is a BEST EFFORT: it emits `Authorization: Bearer <vertexai_service_account_key>` when
-# a key string is configured (treating it as a pre-minted token for testing), else a
-# placeholder. A real OAuth exchange must be wired before live use. See `headers` below.
+# AUTH: ruby_llm authenticates via the googleauth gem (Application Default Credentials /
+# service-account key -> OAuth2 bearer token, SCOPES). The *service-account-key* path is
+# now ported (see vertexai/auth.cr): `headers` mints a real OAuth2 bearer by building a
+# signed JWT assertion (RS256) and exchanging it at Google's token endpoint, caching the
+# token until it expires. Full ADC (metadata-server / gcloud default credentials) is the
+# remaining DEFERRAL — when no service_account_key is configured, auth raises a clear
+# ConfigurationError pointing at that gap rather than emitting a bad token.
 require "json"
 require "../provider"
 require "../provider_completion"
@@ -55,11 +56,17 @@ module CrystalLLM
   module Providers
     # Google Vertex AI integration (chat + tools + streaming, Gemini wire format).
     class VertexAI < Provider
-      # OAuth scopes ruby_llm requests (kept for parity / future real auth).
+      # OAuth scopes ruby_llm requests (space-joined into the JWT `scope` claim).
       SCOPES = [
         "https://www.googleapis.com/auth/cloud-platform",
         "https://www.googleapis.com/auth/generative-language.retriever",
       ]
+
+      # Memoized OAuth state (the minted bearer + its expiry, the parsed key). The auth
+      # implementation lives in vertexai/auth.cr (reopens this class); these ivars back it.
+      @access_token : String? = nil
+      @access_token_expiry : Time? = nil
+      @service_account : ServiceAccount? = nil
 
       def api_base : String
         if @config.vertexai_location.to_s == "global"
@@ -69,14 +76,12 @@ module CrystalLLM
         end
       end
 
-      # DEFERRED (hard auth): ruby_llm mints an OAuth2 bearer via googleauth (ADC or a
-      # service-account key + SCOPES). That exchange is NOT ported. Best effort: if a
-      # `vertexai_service_account_key` is set we treat it as a pre-minted bearer token
-      # (sufficient for tests / a caller that injects a token); otherwise a placeholder
-      # token is emitted so the header shape is correct. Wire real OAuth before live use.
+      # Emits the OAuth2 bearer for Vertex AI. `access_token` (vertexai/auth.cr) mints a
+      # real token from the service-account key (signed JWT assertion -> token exchange)
+      # and caches it until expiry. ruby_llm wraps googleauth errors as UnauthorizedError;
+      # the auth port already raises UnauthorizedError/ConfigurationError directly.
       def headers : Hash(String, String)
-        token = @config.vertexai_service_account_key || "auth-deferred-no-token"
-        {"Authorization" => "Bearer #{token}"}
+        {"Authorization" => "Bearer #{access_token}"}
       end
 
       def self.capabilities : CrystalLLM::Capabilities.class
@@ -94,6 +99,7 @@ module CrystalLLM
   end
 end
 
+require "./vertexai/auth"
 require "./vertexai/media"
 require "./vertexai/tools"
 require "./vertexai/chat"

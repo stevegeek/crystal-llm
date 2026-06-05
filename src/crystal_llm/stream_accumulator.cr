@@ -22,15 +22,11 @@ module CrystalLLM
   # arguments — covering both the fragment-delta wire shape and providers that hand
   # us already-parsed Hashes.
   #
-  # DEFERRAL (chunk-level structured thinking): `append_thinking_from_chunk`
-  # reads `chunk.thinking`, but `Message#thinking` is itself deferred in this
-  # port (see PORTING.md / message.cr). The `<think>`-tag extraction over content
-  # text — which is independent of `Message#thinking` — is fully ported.
-  #
-  # DEFERRAL (Message#thinking in to_message): `to_message` cannot pass
-  # `thinking:` to `Message.new` until `Message#thinking` is ported. The
-  # accumulated thinking text/signature are still tracked and exposed via
-  # `#thinking` so the data is not lost; `Tokens#thinking` is wired today.
+  # Structured thinking: `append_thinking_from_chunk` reads `chunk.thinking` (the
+  # text/signature a provider attaches per streaming delta) and folds it into the
+  # accumulated thinking; `to_message` attaches the result to the final Message.
+  # The `<think>`-tag extraction over content text is a separate, parallel path
+  # (used by providers that inline reasoning in the content stream).
   class StreamAccumulator
     getter content : String
     getter model_id : String?
@@ -77,10 +73,10 @@ module CrystalLLM
     end
 
     def to_message(response : JSON::Any?) : Message
-      # NOTE: `thinking:` is intentionally omitted (Message#thinking deferred).
       Message.new(
         role: Role::Assistant,
         content: @content.empty? ? nil : @content,
+        thinking: thinking,
         tokens: Tokens.build(
           input: @input_tokens,
           output: @output_tokens,
@@ -169,14 +165,17 @@ module CrystalLLM
       @thinking_text += thinking_chunk if thinking_chunk
     end
 
-    # DEFERRED: reads `chunk.thinking`, which Message does not yet expose. Kept as
-    # a no-op so the structured-thinking path lights up automatically once
-    # `Message#thinking` is ported (PORTING.md).
+    # Folds a chunk's structured thinking (Chunk#thinking, set by providers that
+    # stream reasoning as typed deltas — Anthropic thinking_delta/signature_delta,
+    # Gemini thoughts, OpenRouter/OpenAI reasoning) into the accumulated thinking.
+    # Mirrors ruby_llm: append text, keep the FIRST non-nil signature.
     private def append_thinking_from_chunk(chunk : Chunk) : Nil
-      # thinking = chunk.thinking
-      # return unless thinking
-      # @thinking_text += thinking.text.to_s if thinking.text
-      # @thinking_signature ||= thinking.signature
+      thinking = chunk.thinking
+      return unless thinking
+      if text = thinking.text
+        @thinking_text += text
+      end
+      @thinking_signature ||= thinking.signature
     end
 
     private def extract_think_tags(text : String) : Tuple(String, String?)

@@ -16,8 +16,8 @@
 #   recursive uppercase-type rewrite). Documented divergence.
 # - `thinking`: build_thinking_config (includeThoughts / thinkingLevel /
 #   thinkingBudget) is ported. Thinking *text/signature* extraction into the
-#   Message is DROPPED (Crystal Message carries no `thinking:` field yet —
-#   message.cr); thinking_tokens ARE wired.
+#   Message IS wired (thought parts + thoughtSignature -> `Thinking.build`);
+#   thinking_tokens ARE wired.
 # - `response.env.url.path` (Faraday) has no Crest analog reachable here; the
 #   `model_id` fallback uses `data["modelVersion"]` only (the `@model_id` we set
 #   on render is the same value), instead of re-deriving from the request URL.
@@ -106,6 +106,10 @@ module CrystalLLM
         Message.new(
           role: Role::Assistant,
           content: content,
+          thinking: Thinking.build(
+            text: extract_thought_parts(parts),
+            signature: extract_thought_signature(parts)
+          ),
           tool_calls: tool_calls,
           input_tokens: input_tokens(data),
           output_tokens: calculate_output_tokens(data),
@@ -146,7 +150,7 @@ module CrystalLLM
       # ---- content extraction (text-only; attachment rebuild deferred) ----
 
       # Joins the text of all non-thought parts; nil when empty. (Thought parts are
-      # dropped — Message#thinking deferred.)
+      # routed to Message#thinking via `extract_thought_parts`.)
       def extract_text_parts(parts : Array(JSON::Any)) : String?
         content = String.build do |io|
           parts.each do |part_any|
@@ -158,6 +162,36 @@ module CrystalLLM
           end
         end
         content.empty? ? nil : content
+      end
+
+      # Joins the text of all thought parts (parts flagged `thought: true`); nil when
+      # empty. Mirrors ruby_llm's `extract_thought_parts`.
+      def extract_thought_parts(parts : Array(JSON::Any)) : String?
+        thoughts = String.build do |io|
+          parts.each do |part_any|
+            part = part_any.as_h? || next
+            next unless part["thought"]?.try(&.as_bool?)
+            if t = part["text"]?.try(&.as_s?)
+              io << t
+            end
+          end
+        end
+        thoughts.empty? ? nil : thoughts
+      end
+
+      # The first thoughtSignature found across parts (top-level or under
+      # functionCall, camelCase or snake_case). Mirrors ruby_llm's
+      # `extract_thought_signature`.
+      def extract_thought_signature(parts : Array(JSON::Any)) : String?
+        parts.each do |part_any|
+          part = part_any.as_h? || next
+          sig = part["thoughtSignature"]?.try(&.as_s?) ||
+                part["thought_signature"]?.try(&.as_s?) ||
+                part.dig?("functionCall", "thoughtSignature").try(&.as_s?) ||
+                part.dig?("functionCall", "thought_signature").try(&.as_s?)
+          return sig if sig
+        end
+        nil
       end
 
       # ---- message formatting ----

@@ -19,6 +19,35 @@ private def gpt4o_model : CrystalLLM::Model::Info
   CrystalLLM::Model::Info.build(id: "gpt-4o", name: "GPT-4o", provider: "azure")
 end
 
+# Captures the AAD token-request (url + form) and returns a canned response instead of
+# hitting login.microsoftonline.com — keeps the AAD path fully offline. `calls` counts
+# how many times the real POST seam fired so caching/refresh can be asserted.
+private class StubAadAzure < CrystalLLM::Providers::Azure
+  getter aad_url : String? = nil
+  getter aad_form : Hash(String, String)? = nil
+  getter calls : Int32 = 0
+  property canned_body : String = %({"access_token": "aad-token-xyz", "token_type": "Bearer", "expires_in": 3599})
+
+  protected def post_aad_token(url : String, form : Hash(String, String)) : Crest::Response
+    @aad_url = url
+    @aad_form = form
+    @calls += 1
+    Crest::Response.new(
+      HTTP::Client::Response.new(200, body: @canned_body),
+      Crest::Request.new(:post, url)
+    )
+  end
+end
+
+private def aad_config(base : String = "https://my-resource.openai.azure.com") : CrystalLLM::Configuration
+  config = CrystalLLM::Configuration.new
+  config.azure_api_base = base
+  config.azure_tenant_id = "tenant-123"
+  config.azure_client_id = "client-abc"
+  config.azure_client_secret = "secret-shh"
+  config
+end
+
 describe CrystalLLM::Providers::Azure do
   describe "Configuration reopen" do
     it "adds the azure_* keys to Configuration.options" do
@@ -218,6 +247,103 @@ describe CrystalLLM::Providers::Azure do
   describe ".assume_models_exist?" do
     it "is true (Azure uses deployment names)" do
       CrystalLLM::Providers::Azure.assume_models_exist?.should be_true
+    end
+  end
+
+  describe "AAD client-credentials auth" do
+    describe "api-key precedence (default path is unchanged)" do
+      it "still emits the api-key header when azure_api_key is set, even with AAD config" do
+        config = aad_config
+        config.azure_api_key = "test"
+        provider = StubAadAzure.new(config)
+
+        provider.headers["api-key"].should eq("test")
+        provider.headers.has_key?("Authorization").should be_false
+        # the api-key path must never trigger a token POST
+        provider.calls.should eq(0)
+      end
+    end
+
+    describe "#aad_configured?" do
+      it "is true only when all three AAD props are present" do
+        StubAadAzure.new(aad_config).aad_configured?.should be_true
+
+        partial = aad_config
+        partial.azure_client_secret = nil
+        # no api-key/auth-token, missing a credential -> not configured at all
+        CrystalLLM::Providers::Azure.configured?(partial).should be_false
+      end
+    end
+
+    describe "#aad_token_url / #aad_token_form (request shape)" do
+      it "targets the tenant's v2.0 token endpoint" do
+        StubAadAzure.new(aad_config).aad_token_url
+          .should eq("https://login.microsoftonline.com/tenant-123/oauth2/v2.0/token")
+      end
+
+      it "builds a client-credentials grant body with the cognitive-services scope" do
+        form = StubAadAzure.new(aad_config).aad_token_form
+        form["grant_type"].should eq("client_credentials")
+        form["client_id"].should eq("client-abc")
+        form["client_secret"].should eq("secret-shh")
+        form["scope"].should eq("https://cognitiveservices.azure.com/.default")
+      end
+    end
+
+    describe "#headers (AAD path)" do
+      it "POSTs the grant and sets a Bearer header from the access_token" do
+        provider = StubAadAzure.new(aad_config)
+
+        provider.headers["Authorization"].should eq("Bearer aad-token-xyz")
+        provider.headers.has_key?("api-key").should be_false
+
+        # the captured request must match the documented URL + form shape
+        provider.aad_url.should eq("https://login.microsoftonline.com/tenant-123/oauth2/v2.0/token")
+        provider.aad_form.should eq({
+          "grant_type"    => "client_credentials",
+          "client_id"     => "client-abc",
+          "client_secret" => "secret-shh",
+          "scope"         => "https://cognitiveservices.azure.com/.default",
+        })
+      end
+
+      it "caches the token across calls (a single POST for repeated header reads)" do
+        provider = StubAadAzure.new(aad_config)
+
+        provider.headers
+        provider.headers
+        provider.aad_access_token
+
+        provider.calls.should eq(1)
+      end
+
+      it "re-POSTs once the cached token has expired" do
+        provider = StubAadAzure.new(aad_config)
+        # expires_in within the 60s safety skew -> treated as already lapsed
+        provider.canned_body = %({"access_token": "first", "expires_in": 10})
+        provider.headers["Authorization"].should eq("Bearer first")
+
+        provider.canned_body = %({"access_token": "second", "expires_in": 3599})
+        provider.headers["Authorization"].should eq("Bearer second")
+        provider.calls.should eq(2)
+      end
+
+      it "raises a clear error when the token response has no access_token" do
+        provider = StubAadAzure.new(aad_config)
+        provider.canned_body = %({"error": "invalid_client"})
+
+        expect_raises(CrystalLLM::ConfigurationError, /no access_token/) do
+          provider.aad_access_token
+        end
+      end
+    end
+
+    describe ".configured? / #ensure_configured!" do
+      it "is configured with api_base + a complete AAD triple (no api-key/auth-token)" do
+        CrystalLLM::Providers::Azure.configured?(aad_config).should be_true
+        # constructing must not raise (ensure_configured! accepts the AAD triple)
+        StubAadAzure.new(aad_config)
+      end
     end
   end
 end

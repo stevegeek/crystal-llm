@@ -18,6 +18,15 @@ dependencies:
   crest:
     github: mamantoha/crest
     version: ">= 1.0.0"
+  # AWS Signature V4 request signing (Bedrock auth).
+  awscr-signer:
+    github: taylorfinnell/awscr-signer
+    version: ">= 0.9.0"
+  # JWT (RS256 via OpenSSL) for the Google service-account -> access-token
+  # exchange (VertexAI auth).
+  jwt:
+    github: crystal-community/jwt
+    version: ">= 1.6.0"
 
 development_dependencies:
   ameba:

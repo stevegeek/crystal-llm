@@ -1,5 +1,6 @@
 require "../spec_helper"
 require "../../src/crystal_llm/providers/anthropic"
+require "../../src/crystal_llm/stream_accumulator"
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
@@ -253,6 +254,130 @@ describe CrystalLLM::Providers::Anthropic do
         provider.parse_completion_response(build_response(401, body))
       end
     end
+
+    it "attaches thinking text + signature from a thinking content block" do
+      body = <<-JSON
+      {
+        "model": "claude-3-5-sonnet-20241022",
+        "content": [
+          {"type": "thinking", "thinking": "Let me reason about this.", "signature": "sig-abc"},
+          {"type": "text", "text": "The answer is 42."}
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 8}
+      }
+      JSON
+      provider = configured_anthropic
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.content.should eq("The answer is 42.")
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should eq("Let me reason about this.")
+      thinking.signature.should eq("sig-abc")
+    end
+
+    it "reads a redacted_thinking signature when only a redacted block is present" do
+      body = <<-JSON
+      {
+        "model": "claude-3-5-sonnet-20241022",
+        "content": [
+          {"type": "redacted_thinking", "data": "redacted-sig"},
+          {"type": "text", "text": "ok"}
+        ],
+        "usage": {"input_tokens": 3, "output_tokens": 2}
+      }
+      JSON
+      provider = configured_anthropic
+      message = provider.parse_completion_response(build_response(200, body))
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should be_nil
+      thinking.signature.should eq("redacted-sig")
+    end
+
+    it "leaves thinking nil when no thinking block is present" do
+      body = <<-JSON
+      {
+        "model": "claude-3-5-sonnet-20241022",
+        "content": [{"type": "text", "text": "hi"}],
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+      }
+      JSON
+      provider = configured_anthropic
+      provider.parse_completion_response(build_response(200, body)).thinking.should be_nil
+    end
+  end
+
+  describe "outbound thinking blocks (multi-turn extended thinking)" do
+    it "prepends a thinking block to an assistant message when thinking is enabled" do
+      provider = configured_anthropic
+      thinking_cfg = CrystalLLM::Thinking::Config.new(budget: 1024)
+      assistant = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant, content: "the answer",
+        thinking: CrystalLLM::Thinking.new(text: "reasoning here", signature: "sig-1")
+      )
+      messages = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "q"),
+        assistant,
+      ]
+
+      payload = provider.render_payload(
+        messages,
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        thinking: thinking_cfg
+      )
+
+      assistant_msg = payload["messages"].as_a[1].as_h
+      blocks = assistant_msg["content"].as_a
+      blocks[0].as_h["type"].as_s.should eq("thinking")
+      blocks[0].as_h["thinking"].as_s.should eq("reasoning here")
+      blocks[0].as_h["signature"].as_s.should eq("sig-1")
+      # the actual content follows the thinking block
+      blocks[1].as_h["type"].as_s.should eq("text")
+      blocks[1].as_h["text"].as_s.should eq("the answer")
+    end
+
+    it "emits a redacted_thinking block for a signature-only assistant message" do
+      provider = configured_anthropic
+      thinking_cfg = CrystalLLM::Thinking::Config.new(budget: 512)
+      assistant = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant, content: "x",
+        thinking: CrystalLLM::Thinking.new(signature: "redacted-1")
+      )
+
+      payload = provider.render_payload(
+        [assistant],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        thinking: thinking_cfg
+      )
+
+      blocks = payload["messages"].as_a[0].as_h["content"].as_a
+      blocks[0].as_h["type"].as_s.should eq("redacted_thinking")
+      blocks[0].as_h["data"].as_s.should eq("redacted-1")
+    end
+
+    it "does NOT prepend a thinking block when thinking is disabled" do
+      provider = configured_anthropic
+      assistant = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant, content: "the answer",
+        thinking: CrystalLLM::Thinking.new(text: "reasoning here", signature: "sig-1")
+      )
+
+      payload = provider.render_payload(
+        [assistant],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false
+      )
+
+      blocks = payload["messages"].as_a[0].as_h["content"].as_a
+      blocks[0].as_h["type"].as_s.should eq("text")
+    end
   end
 
   describe "#build_chunk" do
@@ -285,6 +410,39 @@ describe CrystalLLM::Providers::Anthropic do
       chunk = provider.build_chunk(data)
       chunk.model_id.should eq("claude-3-5-sonnet-20241022")
       chunk.input_tokens.should eq(3)
+    end
+
+    it "attaches thinking text from a thinking_delta event" do
+      data = JSON.parse(%({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"step "}}))
+      chunk = configured_anthropic.build_chunk(data)
+      chunk.thinking.should_not be_nil
+      chunk.thinking.try(&.text).should eq("step ")
+      chunk.content.should be_nil
+    end
+
+    it "attaches a signature from a signature_delta event" do
+      data = JSON.parse(%({"type":"content_block_delta","delta":{"type":"signature_delta","signature":"sig-x"}}))
+      chunk = configured_anthropic.build_chunk(data)
+      chunk.thinking.should_not be_nil
+      chunk.thinking.try(&.signature).should eq("sig-x")
+    end
+
+    it "accumulates streamed thinking_delta + signature_delta into the final Message" do
+      provider = configured_anthropic
+      accumulator = CrystalLLM::StreamAccumulator.new
+      events = [
+        %({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"I will "}}),
+        %({"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"reason."}}),
+        %({"type":"content_block_delta","delta":{"type":"signature_delta","signature":"sig-final"}}),
+        %({"type":"content_block_delta","delta":{"type":"text_delta","text":"Done."}}),
+      ]
+      events.each { |e| accumulator.add(provider.build_chunk(JSON.parse(e))) }
+
+      message = accumulator.to_message(nil)
+      message.content.should eq("Done.")
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should eq("I will reason.")
+      thinking.signature.should eq("sig-final")
     end
   end
 

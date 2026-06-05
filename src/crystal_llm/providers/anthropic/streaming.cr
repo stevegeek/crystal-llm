@@ -10,9 +10,10 @@
 # `signature_delta`); tool-call argument fragments arrive as `input_json_delta`.
 #
 # Divergences:
-# - thinking text/signature are extracted but not attached to the Chunk (Message#thinking
-#   deferred); thinking_tokens are not separately carried on chunk usage (Anthropic does
-#   not split them on stream events). `parse_streaming_error` is ported for the streaming
+# - thinking text (thinking_delta) and signature (signature_delta) ARE attached to the
+#   Chunk via `Thinking.build`; the StreamAccumulator folds them into the final Message.
+#   thinking_tokens are not separately carried on chunk usage (Anthropic does not split
+#   them on stream events). `parse_streaming_error` is ported for the streaming
 #   error-status mapping (overloaded_error -> 529, else 500).
 # - tool-call deltas: an `input_json_delta` carries a `partial_json` fragment. ToolCall#
 #   arguments is a typed Hash (can't hold a partial), so the raw fragment String rides on
@@ -35,6 +36,10 @@ module CrystalLLM
           role: Role::Assistant,
           model_id: extract_stream_model_id(data),
           content: extract_content_delta(data, delta_type),
+          thinking: Thinking.build(
+            text: extract_thinking_delta(data, delta_type),
+            signature: extract_signature_delta(data, delta_type)
+          ),
           input_tokens: extract_stream_input_tokens(data),
           output_tokens: extract_stream_output_tokens(data),
           cached_tokens: extract_stream_cached_tokens(data),

@@ -29,6 +29,10 @@ module CrystalLLM::Spec
     # Recorded {url, form} of each multipart post (for assertions on the file part
     # + scalar fields without sending anything over the wire).
     getter multipart_posts : Array(Tuple(String, Hash(String, Crest::ParamsValue)))
+    # Recorded request headers of each post/get/post_stream (FIFO, parallel to the
+    # post records). Lets specs assert per-request signed headers (e.g. Bedrock SigV4)
+    # actually reach the connection — the headers, not just the body, are threaded.
+    getter request_headers : Array(Hash(String, String))
 
     def initialize(provider : CrystalLLM::Provider, config : CrystalLLM::Configuration)
       super(provider, config)
@@ -37,6 +41,7 @@ module CrystalLLM::Spec
       @posts = [] of Tuple(String, String)
       @stream_posts = [] of Tuple(String, String)
       @multipart_posts = [] of Tuple(String, Hash(String, Crest::ParamsValue))
+      @request_headers = [] of Hash(String, String)
     end
 
     # Queue a canned non-streaming response (FIFO across post/get).
@@ -54,11 +59,13 @@ module CrystalLLM::Spec
     def post(url : String, payload : String,
              headers : Hash(String, String) = {} of String => String) : Crest::Response
       @posts << {url, payload}
+      @request_headers << headers
       next_response
     end
 
     def get(url : String,
             headers : Hash(String, String) = {} of String => String) : Crest::Response
+      @request_headers << headers
       next_response
     end
 
@@ -76,6 +83,7 @@ module CrystalLLM::Spec
                     headers : Hash(String, String) = {} of String => String,
                     &block : Crest::Response ->) : Nil
       @stream_posts << {url, payload}
+      @request_headers << headers
       if @queued_streams.empty?
         raise "StubConnection ran out of queued SSE streams (queue a stub_stream)"
       end

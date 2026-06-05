@@ -13,12 +13,11 @@
 # - Rich attachment media formatting (image/document/text blocks in bedrock/media.rb)
 #   is DEFERRED with the attachment-provider work — the text/Hash/Array content paths
 #   chat needs are ported inline in chat.cr's render_message_content. See the note there.
-# - HARD AUTH: AWS SigV4 request signing (bedrock/auth.rb). ruby_llm's Bedrock signs
-#   every request (signed_post/signed_get/sign_headers). The Crystal port implements
-#   `headers` as a best-effort stub with an explicit 'auth deferred' note (see below)
-#   and ports the SigV4 helper shape in bedrock/auth.cr behind `sign_headers` for when
-#   the Connection layer wires per-request signing. No live calls are made in the spec,
-#   so the unit surface (render_payload/parse_completion_response/build_chunk) is exact.
+# - AWS SigV4 request signing (bedrock/auth.rb) is WIRED. ruby_llm's Bedrock signs
+#   every request (signed_post/signed_get/sign_headers). The Crystal port overrides the
+#   `Provider#sign_headers(method, url, body)` hook in bedrock/auth.cr (computing SigV4
+#   via the awscr-signer shard) and the sync/stream/list pipeline merges those headers
+#   into every request. Specs assert the signed-header shape structurally — NO live AWS.
 #
 # Other divergences (documented at each hook):
 # - `@model` instance state: ruby_llm stashes `@model` in render_payload and reads it
@@ -64,11 +63,12 @@ module CrystalLLM
         "https://bedrock-runtime.#{bedrock_region}.amazonaws.com"
       end
 
-      # AUTH DEFERRED: ruby_llm returns `{}` here and signs each request separately
-      # via the SigV4 helper (bedrock/auth.cr). Per-request signing is wired with the
-      # Connection layer; until then `headers` is a best-effort stub returning the
-      # JSON content-type. The SigV4 computation itself is ported in bedrock/auth.cr's
-      # `sign_headers` so it is ready to slot in. Do NOT rely on this for live calls.
+      # ruby_llm returns `{}` here and signs each request separately via the SigV4
+      # helper. The Crystal port wires per-request signing through `sign_headers`
+      # (bedrock/auth.cr), which is merged into every request by the sync/stream/list
+      # pipeline and supplies the `Authorization`/`X-Amz-*` + `Content-Type` headers.
+      # This static hash just sets the JSON content-type as a baseline (the signed
+      # headers re-assert it); it carries no credentials.
       def headers : Hash(String, String)
         {"Content-Type" => "application/json"}
       end

@@ -9,9 +9,13 @@
 #   layer), read with `as_h?`/`dig?` rather than Ruby symbol keys.
 # - `thinking` is a `Thinking::Config?`; `resolve_effort` reads `.effort` (the
 #   `respond_to?(:effort)` branch — Crystal's Config always responds).
-# - Thinking *text/signature* extraction into Message is deferred (Message#thinking
-#   deferred). reasoning_tokens are still wired. `<think>`-tag content stripping is
-#   ported (content-only).
+# - Thinking text/signature extraction into Message IS wired: `thinking` content
+#   blocks (or `reasoning_content`/`reasoning`/`thinking` keys) become the thinking
+#   text, `reasoning_signature`/`signature` the signature, attached via
+#   `Thinking.build`. Outbound, `format_thinking` re-emits reasoning on assistant
+#   messages. reasoning_tokens are wired; `<think>`-tag content stripping is ported.
+#   This is the shared inbound/outbound thinking path for Mistral too (it inherits
+#   `parse_completion_response`/`format_messages` from here).
 # - `response.body` is the raw String (Crest), so parse_completion_response JSON.parses
 #   it (ruby_llm's Faraday json middleware pre-parses; here we parse in-method).
 require "json"
@@ -77,11 +81,14 @@ module CrystalLLM
         raise Error.new(response, "OpenAI response had no message") unless message_data
 
         usage = data["usage"]?.try(&.as_h?) || {} of String => JSON::Any
-        content, _thinking_from_blocks = extract_content_and_thinking(message_data["content"]?)
+        content, thinking_from_blocks = extract_content_and_thinking(message_data["content"]?)
+        thinking_text = thinking_from_blocks || extract_thinking_text(message_data)
+        thinking_signature = extract_thinking_signature(message_data)
 
         Message.new(
           role: Role::Assistant,
           content: content,
+          thinking: Thinking.build(text: thinking_text, signature: thinking_signature),
           tool_calls: parse_tool_calls(message_data["tool_calls"]?),
           input_tokens: input_tokens(usage),
           output_tokens: output_tokens(usage),
@@ -164,8 +171,30 @@ module CrystalLLM
           if id = msg.tool_call_id
             entry["tool_call_id"] = JSON::Any.new(id)
           end
+          format_thinking(msg).each { |k, v| entry[k] = v }
           JSON::Any.new(entry)
         end
+      end
+
+      # Re-emits an assistant message's reasoning so a multi-turn request can carry
+      # prior thinking. Mirrors ruby_llm's `format_thinking`: `reasoning` +
+      # `reasoning_content` (text) and `reasoning_signature` (signature). Returns an
+      # empty hash when there is no thinking to send.
+      def format_thinking(msg : Message) : Hash(String, JSON::Any)
+        result = {} of String => JSON::Any
+        return result unless msg.role.assistant?
+
+        thinking = msg.thinking
+        return result unless thinking
+
+        if text = thinking.text
+          result["reasoning"] = JSON::Any.new(text)
+          result["reasoning_content"] = JSON::Any.new(text)
+        end
+        if sig = thinking.signature
+          result["reasoning_signature"] = JSON::Any.new(sig)
+        end
+        result
       end
 
       private def format_content_arg(content : String | Content | Nil) : String | Content | Content::Raw | Nil
@@ -187,6 +216,23 @@ module CrystalLLM
       end
 
       # ---- content / thinking extraction ----
+
+      # Top-level reasoning text on a message object: `reasoning_content` /
+      # `reasoning` / `thinking` (first String wins). Used when the content blocks
+      # carry no thinking. Mirrors ruby_llm's `extract_thinking_text`.
+      def extract_thinking_text(message_data : Hash(String, JSON::Any)) : String?
+        candidate = message_data["reasoning_content"]? ||
+                    message_data["reasoning"]? ||
+                    message_data["thinking"]?
+        candidate.try(&.as_s?)
+      end
+
+      # The reasoning signature: `reasoning_signature` / `signature` (first String
+      # wins). Mirrors ruby_llm's `extract_thinking_signature`.
+      def extract_thinking_signature(message_data : Hash(String, JSON::Any)) : String?
+        candidate = message_data["reasoning_signature"]? || message_data["signature"]?
+        candidate.try(&.as_s?)
+      end
 
       # Returns {content, thinking_text}. Array content (content blocks) collapses
       # to joined text + joined thinking; String content runs <think>-tag stripping.

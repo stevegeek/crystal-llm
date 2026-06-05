@@ -281,6 +281,29 @@ describe CrystalLLM::Providers::Gemini do
         provider.parse_completion_response(build_response(400, body))
       end
     end
+
+    it "attaches thinking from thought parts + thoughtSignature" do
+      body = <<-JSON
+      {
+        "candidates": [
+          {"content": {"parts": [
+            {"thought": true, "text": "Reasoning ", "thoughtSignature": "g-sig"},
+            {"thought": true, "text": "more."},
+            {"text": "Final answer."}
+          ]}}
+        ],
+        "modelVersion": "gemini-2.5-flash",
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5, "thoughtsTokenCount": 7}
+      }
+      JSON
+      provider = configured_gemini
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.content.should eq("Final answer.")
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should eq("Reasoning more.")
+      thinking.signature.should eq("g-sig")
+    end
   end
 
   describe "#build_chunk" do

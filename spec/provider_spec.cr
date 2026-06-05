@@ -1,5 +1,6 @@
 require "./spec_helper"
 require "../src/crystal_llm/provider"
+require "../src/crystal_llm/provider_completion"
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
@@ -48,6 +49,15 @@ describe CrystalLLM::Provider do
       config = CrystalLLM::Configuration.new
       config.http_proxy = "set"
       ProviderSpecDummy.new(config).should be_a(CrystalLLM::Provider)
+    end
+  end
+
+  describe "#sign_headers (default hook)" do
+    it "returns no extra headers (signing is opt-in per provider)" do
+      config = CrystalLLM::Configuration.new
+      config.http_proxy = "set"
+      provider = ProviderSpecDummy.new(config)
+      provider.sign_headers("POST", "/v1/chat", "{}").should be_empty
     end
   end
 

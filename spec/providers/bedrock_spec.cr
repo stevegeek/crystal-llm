@@ -1,6 +1,7 @@
 require "../spec_helper"
 require "../../src/crystal_llm/provider_completion"
 require "../../src/crystal_llm/providers/bedrock"
+require "../support/stub_connection"
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
@@ -77,6 +78,80 @@ describe CrystalLLM::Providers::Bedrock do
       )
       provider.completion_url.should eq("/model/anthropic.claude-3-sonnet-20240229-v1:0/converse")
       provider.stream_url.should eq("/model/anthropic.claude-3-sonnet-20240229-v1:0/converse-stream")
+    end
+  end
+
+  describe "#sign_headers (AWS SigV4)" do
+    it "returns an AWS4-HMAC-SHA256 Authorization + X-Amz-Date for a POST" do
+      headers = configured_bedrock.sign_headers("POST", "/model/m/converse", %({"a":1}))
+
+      headers["Authorization"].should start_with("AWS4-HMAC-SHA256 ")
+      headers["Authorization"].should contain("Credential=test/")
+      headers["Authorization"].should contain("/us-east-1/bedrock/aws4_request")
+      headers["Authorization"].should contain("SignedHeaders=")
+      headers["Authorization"].should contain("Signature=")
+      # x-amz-date is in the basic ISO8601 SigV4 form (YYYYMMDDTHHMMSSZ).
+      headers["X-Amz-Date"].should match(/\A\d{8}T\d{6}Z\z/)
+      headers["X-Amz-Content-Sha256"].should match(/\A[0-9a-f]{64}\z/)
+      headers["Content-Type"].should eq("application/json")
+      headers.has_key?("X-Amz-Security-Token").should be_false
+    end
+
+    it "signs the host so it appears in SignedHeaders" do
+      headers = configured_bedrock.sign_headers("POST", "/model/m/converse", "{}")
+      headers["Authorization"].should contain("SignedHeaders=host;")
+    end
+
+    it "changes the signature when the body changes" do
+      provider = configured_bedrock
+      one = provider.sign_headers("POST", "/model/m/converse", %({"a":1}))
+      two = provider.sign_headers("POST", "/model/m/converse", %({"a":2}))
+
+      one["Authorization"].should_not eq(two["Authorization"])
+      one["X-Amz-Content-Sha256"].should_not eq(two["X-Amz-Content-Sha256"])
+    end
+
+    it "includes a session token (in the header and the signed headers) when configured" do
+      config = CrystalLLM::Configuration.new
+      config.bedrock_api_key = "test"
+      config.bedrock_secret_key = "test"
+      config.bedrock_region = "us-east-1"
+      config.bedrock_session_token = "SESSION-TOKEN"
+      provider = CrystalLLM::Providers::Bedrock.new(config)
+
+      headers = provider.sign_headers("POST", "/model/m/converse", "{}")
+      headers["X-Amz-Security-Token"].should eq("SESSION-TOKEN")
+      headers["Authorization"].should contain("x-amz-security-token")
+    end
+
+    it "signs a GET against the control-plane models host" do
+      provider = configured_bedrock
+      provider.models_url.should eq("https://bedrock.us-east-1.amazonaws.com/foundation-models")
+
+      headers = provider.sign_headers("GET", provider.models_url, "")
+      headers["Authorization"].should start_with("AWS4-HMAC-SHA256 ")
+      headers["Authorization"].should contain("/bedrock/aws4_request")
+    end
+
+    it "threads the signed headers into the POST request pipeline (no network)" do
+      provider = configured_bedrock
+      stub = CrystalLLM::Spec::StubConnection.new(provider, provider.config)
+      stub.stub_response(%({"output":{"message":{"role":"assistant","content":[{"text":"hi"}]}}}))
+      provider.connection = stub
+
+      provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false
+      )
+      provider.sync_response(%({"messages":[]}))
+
+      sent = stub.request_headers.last
+      sent["Authorization"].should start_with("AWS4-HMAC-SHA256 ")
+      sent["X-Amz-Date"].should match(/\A\d{8}T\d{6}Z\z/)
+      sent.has_key?("X-Amz-Content-Sha256").should be_true
     end
   end
 

@@ -240,6 +240,56 @@ describe CrystalLLM::Providers::Mistral do
       calls["call_1"].name.should eq("get_weather")
       calls["call_1"].arguments["city"].as_s.should eq("Paris")
     end
+
+    it "attaches thinking from Mistral thinking content blocks (via the OpenAI base)" do
+      body = <<-JSON
+      {
+        "model": "magistral-medium-latest",
+        "choices": [
+          {"message": {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": [{"type": "text", "text": "Let me think."}]},
+            {"type": "text", "text": "The answer."}
+          ]}}
+        ],
+        "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10}
+      }
+      JSON
+      provider = configured_mistral
+      message = provider.parse_completion_response(build_response(200, body))
+      message.content.should eq("The answer.")
+      thinking = message.thinking.should_not be_nil
+      thinking.text.should eq("Let me think.")
+    end
+  end
+
+  describe "outbound thinking content blocks" do
+    it "prepends a Mistral thinking block to an assistant message" do
+      provider = configured_mistral
+      assistant = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant, content: "The answer.",
+        thinking: CrystalLLM::Thinking.new(text: "reasoning", signature: "m-sig")
+      )
+      formatted = provider.format_messages([assistant])
+      blocks = formatted[0].as_h["content"].as_a
+
+      first = blocks[0].as_h
+      first["type"].as_s.should eq("thinking")
+      first["signature"].as_s.should eq("m-sig")
+      inner = first["thinking"].as_a[0].as_h
+      inner["type"].as_s.should eq("text")
+      inner["text"].as_s.should eq("reasoning")
+
+      # the message content trails the thinking block as a text part
+      last = blocks[1].as_h
+      last["type"].as_s.should eq("text")
+      last["text"].as_s.should eq("The answer.")
+    end
+
+    it "leaves a non-thinking assistant message as a plain string content" do
+      provider = configured_mistral
+      msg = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "hi")
+      provider.format_messages([msg])[0].as_h["content"].as_s.should eq("hi")
+    end
   end
 
   describe "#build_chunk (inherited)" do
