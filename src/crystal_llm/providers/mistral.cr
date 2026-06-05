@@ -6,19 +6,17 @@
 # capabilities helper, and the chat/models quirks (see mistral/chat.cr,
 # mistral/models.cr, mistral/capabilities.cr).
 #
-# DEFERRED (per task scope — chat path only):
-# - The Embeddings mixin (lib/ruby_llm/providers/mistral/embeddings.rb) is NOT
-#   ported (embeddings/image/moderation/transcription provider methods are out of
-#   scope, matching the OpenAI port).
-# - The Media mixin (lib/ruby_llm/providers/mistral/media.rb) — Mistral's rich
-#   attachment formatting (image_url / document_url / audio / text-file parts) —
-#   is DEFERRED with the attachment-provider work; the inherited OpenAI Media only
-#   handles text/Raw/Hash content and raises a clear "deferred" error for
-#   attachments. Note Mistral additionally uses a `document_url` part type (vs
-#   OpenAI's `file`) for pdf/document attachments — reproduce that when the
-#   attachment port lands.
-# - Assistant thinking-block injection in format_messages (needs Message#thinking,
-#   deferred). The thinking *payload* shaping IS ported (see mistral/chat.cr).
+# Scope notes:
+# - The Embeddings mixin (mistral/embeddings.rb) IS ported — see mistral/embeddings.cr
+#   (it feeds the provider_media.cr embed pipeline). Image/moderation/transcription
+#   are not offered by Mistral.
+# - Mistral has no dedicated Media mixin here: it inherits OpenAI's media formatting
+#   (mistral/media.rb is not separately ported). Note Mistral upstream uses a
+#   `document_url` part type (vs OpenAI's `file`) for pdf/document attachments —
+#   the inherited OpenAI Media uses the `file` shape; reproduce `document_url` if a
+#   Mistral-specific media override is added later.
+# - Assistant thinking-block injection in format_messages IS ported (reads
+#   Message#thinking — see mistral/chat.cr), as is the thinking *payload* shaping.
 # - Hard auth: only the `Bearer #{mistral_api_key}` header is wired; no API-key
 #   validation/refresh beyond the configuration_requirements check.
 require "json"

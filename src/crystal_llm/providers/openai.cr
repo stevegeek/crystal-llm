@@ -6,21 +6,19 @@
 # (reopened in sections) and ports Capabilities as a `CrystalLLM::Capabilities`
 # subclass (see provider_completion.cr for why Capabilities is a class hierarchy).
 #
-# DEFERRED (per task scope — embeddings/images/moderation/transcription provider
-# methods): the OpenAI::{Embeddings,Images,Moderation,Transcription} mixins are NOT
-# ported here. Their render_*/parse_* hooks live in those still-unported provider
-# methods. media.cr is ported only for the text/Raw/Hash content paths that chat
-# needs; rich attachment formatting (image/audio/pdf parts) is DEFERRED with the
-# attachment-provider work (the Attachment#for_llm/url? surface those need).
+# Media: the OpenAI::{Embeddings,Images,Moderation,Transcription} mixins ARE ported
+# (see openai/{embeddings,images,moderation,transcription}.cr — their render_*/parse_*
+# hooks feed the provider_media.cr pipeline). media.cr formats the full rich-attachment
+# surface (image/audio/pdf content parts via Attachment#for_llm), not just text.
 #
 # Other divergences:
-# - `tool_prefs` (tool_choice / parallel_tool_calls) is omitted from render_payload
-#   (the completion pipeline defers it — see provider_completion.cr). build_tool_choice
-#   is still ported for when the chat/agent layer wires tool_prefs back in.
-# - thinking text/signature *extraction* into Message is DEFERRED (Message#thinking
-#   is itself deferred — see message.cr). Token-level reasoning_tokens ARE wired.
-#   `<think>`-tag stripping from content is ported (content-only, independent of
-#   Message#thinking).
+# - `tool_prefs` (tool_choice / parallel_tool_calls) IS emitted by render_payload (see
+#   openai/chat.cr): `choice` → `tool_choice` (via `build_tool_choice`), `calls` →
+#   `parallel_tool_calls`.
+# - thinking text/signature *extraction* into Message IS wired (see openai/chat.cr:
+#   `thinking`/`reasoning_content` blocks → `Thinking.build` → Message#thinking).
+#   Token-level reasoning_tokens are wired too, and `<think>`-tag stripping from
+#   content is ported.
 require "json"
 require "../provider"
 require "../provider_completion"

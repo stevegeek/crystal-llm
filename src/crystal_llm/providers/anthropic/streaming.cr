@@ -34,17 +34,17 @@ module CrystalLLM
 
         Chunk.new(
           role: Role::Assistant,
-          model_id: extract_stream_model_id(data),
+          model_id: extract_model_id(data),
           content: extract_content_delta(data, delta_type),
           thinking: Thinking.build(
             text: extract_thinking_delta(data, delta_type),
             signature: extract_signature_delta(data, delta_type)
           ),
-          input_tokens: extract_stream_input_tokens(data),
-          output_tokens: extract_stream_output_tokens(data),
-          cached_tokens: extract_stream_cached_tokens(data),
-          cache_creation_tokens: extract_stream_cache_creation_tokens(data),
-          tool_calls: extract_stream_tool_calls(data)
+          input_tokens: extract_input_tokens(data),
+          output_tokens: extract_output_tokens(data),
+          cached_tokens: extract_cached_tokens(data),
+          cache_creation_tokens: extract_cache_creation_tokens(data),
+          tool_calls: extract_tool_calls(data)
         )
       end
 
@@ -63,25 +63,25 @@ module CrystalLLM
         nil
       end
 
-      private def extract_stream_model_id(data : JSON::Any) : String?
+      private def extract_model_id(data : JSON::Any) : String?
         data.dig?("message", "model").try(&.as_s?)
       end
 
-      private def extract_stream_input_tokens(data : JSON::Any) : Int32?
+      private def extract_input_tokens(data : JSON::Any) : Int32?
         int_at(data.dig?("message", "usage", "input_tokens"))
       end
 
-      private def extract_stream_output_tokens(data : JSON::Any) : Int32?
+      private def extract_output_tokens(data : JSON::Any) : Int32?
         int_at(data.dig?("message", "usage", "output_tokens")) ||
           int_at(data.dig?("usage", "output_tokens"))
       end
 
-      private def extract_stream_cached_tokens(data : JSON::Any) : Int32?
+      private def extract_cached_tokens(data : JSON::Any) : Int32?
         int_at(data.dig?("message", "usage", "cache_read_input_tokens")) ||
           int_at(data.dig?("usage", "cache_read_input_tokens"))
       end
 
-      private def extract_stream_cache_creation_tokens(data : JSON::Any) : Int32?
+      private def extract_cache_creation_tokens(data : JSON::Any) : Int32?
         direct = int_at(data.dig?("message", "usage", "cache_creation_input_tokens")) ||
                  int_at(data.dig?("usage", "cache_creation_input_tokens"))
         return direct if direct
@@ -97,7 +97,7 @@ module CrystalLLM
           data.dig?("delta", "type").try(&.as_s?) == "input_json_delta"
       end
 
-      private def extract_stream_tool_calls(data : JSON::Any) : Hash(String, ToolCall)?
+      private def extract_tool_calls(data : JSON::Any) : Hash(String, ToolCall)?
         if json_delta?(data)
           # Carry the raw partial_json fragment String through to the accumulator,
           # which concatenates all fragments and parses the result once. Parsing

@@ -40,8 +40,8 @@
 #   hatch is now ported as `forall T` overloads that derive the schema from `T`'s
 #   instance vars and deserialize via `T.from_json` (see the typed-hatch section).
 #
-# * Cost aggregation (`Chat#cost` → `Cost.aggregate`) is DEFERRED (Cost.aggregate
-#   over a message list isn't ported). Noted in deferrals.
+# * Cost aggregation (`Chat#cost` → `Cost.aggregate`) is ported: `#cost` sums each
+#   message's cost via `Cost.aggregate` (see `#cost` below).
 #
 # * `tool_prefs` (`:choice` / `:calls`): the per-call tool-choice preference and
 #   the tool-call *limit* are ported as Chat state AND forwarded to the provider —
@@ -80,8 +80,8 @@ module CrystalLLM
     getter messages : Array(Message)
     getter tools : Hash(String, Tool)
     # Tool-choice preference state. `:choice` (a String? tool name / "auto" /
-    # "none" / "required") is held but not yet forwarded to the provider (see
-    # divergences). `:calls` is the call limit as a String? ("one"/"many").
+    # "none" / "required") is forwarded to the provider via `complete_once` →
+    # `Provider#complete`. `:calls` is the call limit as a String? ("one"/"many").
     getter tool_prefs : Hash(String, String?)
     getter params : Hash(String, JSON::Any)
     getter headers : Hash(String, String)

@@ -18,13 +18,12 @@ module CrystalLLM
   # * `categories` / `category_scores` return `Hash(String, JSON::Any)` (the empty
   #   case is an empty hash), mirroring ruby_llm's `{}` default.
   #
-  # == Deferred (faithful port, later phase) ==
+  # == Class-method entry point (lives in provider_media.cr) ==
   #
-  # * `Moderation.moderate(input, ...)` — the class-method entry point needs the
-  #   Models registry (`Models.resolve`) and a Provider instance with `#moderate`,
-  #   neither of which is ported yet. It is intentionally omitted here rather than
-  #   stubbed; see `deferrals`. The top-level `CrystalLLM.moderate` shim is likewise
-  #   deferred to the provider/connection phase.
+  # * `Moderation.moderate(input, ...)` — the class-method entry point (it resolves
+  #   the model via `Models.resolve` and dispatches to a Provider's `#moderate`)
+  #   lives in `provider_media.cr`, alongside the moderate pipeline. The top-level
+  #   `CrystalLLM.moderate` facade shim lives there too.
   class Moderation
     getter id : String
     getter model : String

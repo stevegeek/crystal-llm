@@ -210,6 +210,16 @@ module CrystalLLM
           end
         end
 
+        # openai/capabilities.rb: OpenAI accepts per-request tool_choice and
+        # parallel-tool-call control for every model (both unconditionally true).
+        def self.supports_tool_choice?(_model_id : String) : Bool
+          true
+        end
+
+        def self.supports_tool_parallel_control?(_model_id : String) : Bool
+          true
+        end
+
         # Returns the wire pricing shape (text_tokens/standard) Model::Pricing consumes.
         # Image-model pricing is DEFERRED (header); image families return text-only
         # standard pricing from their input/output defaults.

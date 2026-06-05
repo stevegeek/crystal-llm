@@ -7,8 +7,8 @@ module CrystalLLM
   # Divergences from ruby_llm:
   # - `segments` is wire data (an array of provider-shaped JSON objects), so it is
   #   typed `Array(JSON::Any)?` rather than Ruby's untyped Array (design §11).
-  # - `Transcription.transcribe` (the class method) requires the Models registry and a
-  #   Provider instance; both are not yet ported, so it is DEFERRED (see PORTING.md).
+  # - `Transcription.transcribe` (the class method) resolves the model via the Models
+  #   registry and dispatches to a Provider instance; it lives in `provider_media.cr`.
   class Transcription
     getter text : String
     getter model : String
@@ -30,9 +30,8 @@ module CrystalLLM
       @output_tokens = output_tokens
     end
 
-    # DEFERRED: `Transcription.transcribe(audio_file, **kwargs)` resolves the model via
-    # the Models registry and dispatches to a Provider instance's `#transcribe`. Neither
-    # Models nor Provider is ported yet, so this faithful entry point is intentionally
-    # omitted rather than faked. Tracked in PORTING.md / returned as a deferral.
+    # `Transcription.transcribe(audio_file, **kwargs)` (the class-method entry point)
+    # resolves the model via the Models registry and dispatches to a Provider's
+    # `#transcribe`. It lives in `provider_media.cr`, alongside the transcribe pipeline.
   end
 end

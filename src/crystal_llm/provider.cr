@@ -97,6 +97,19 @@ module CrystalLLM
       self.class.configured?(@config)
     end
 
+    # Instance delegators to the class-level locality flags (ruby_llm parity).
+    def local? : Bool
+      self.class.local?
+    end
+
+    def remote? : Bool
+      self.class.remote?
+    end
+
+    def assume_models_exist? : Bool
+      self.class.assume_models_exist?
+    end
+
     private def ensure_configured! : Nil
       missing = self.class.configuration_requirements.reject { |req| @config.configured?(req) }
       return if missing.empty?
@@ -175,12 +188,49 @@ module CrystalLLM
       [] of String
     end
 
+    # Locality flags (ruby_llm parity). A "local" provider runs against a
+    # locally-hosted endpoint (e.g. Ollama); the default is remote. Concrete
+    # providers override `local?` when appropriate.
+    def self.local? : Bool
+      false
+    end
+
+    def self.remote? : Bool
+      !local?
+    end
+
+    # Whether the provider serves models not present in the registry (ruby_llm
+    # uses this to skip model-existence validation, e.g. for local providers).
+    def self.assume_models_exist? : Bool
+      false
+    end
+
     def self.configured?(config : Configuration) : Bool
       configuration_requirements.all? { |req| config.configured?(req) }
     end
 
+    # Resolves the provider class that serves *model* via the model registry
+    # (ruby_llm's `Provider.for`). Raises if the model isn't found.
+    def self.for(model : String) : Provider.class | ::Nil
+      model_info = Models.find(model)
+      provider = model_info.provider
+      provider.nil? ? nil : resolve(provider)
+    end
+
+    def self.local_providers : Array(Provider.class)
+      @@providers.values.select(&.local?)
+    end
+
+    def self.remote_providers : Array(Provider.class)
+      @@providers.values.select(&.remote?)
+    end
+
     def self.configured_providers(config : Configuration) : Array(Provider.class)
       @@providers.values.select(&.configured?(config))
+    end
+
+    def self.configured_remote_providers(config : Configuration) : Array(Provider.class)
+      @@providers.values.select { |provider_class| provider_class.remote? && provider_class.configured?(config) }
     end
   end
 end

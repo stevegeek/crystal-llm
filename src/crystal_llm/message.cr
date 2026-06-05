@@ -32,8 +32,8 @@ module CrystalLLM
     # OpenAI reasoning) attach it here so the round-trip survives; nil otherwise.
     getter thinking : Thinking?
 
-    # NOTE: `cost`/`model_info` are deferred until model/info and cost are ported
-    # (tracked in PORTING.md).
+    # `cost`/`model_info` are implemented below (model/info and cost are ported):
+    # `model_info` resolves `model_id` via the registry, `cost` builds a `Cost`.
     def initialize(role : Role | Symbol | String, content : String | Content | Nil = nil,
                    tool_calls : Hash(String, ToolCall)? = nil, tool_call_id : String? = nil,
                    model_id : String? = nil, tokens : Tokens? = nil, raw : JSON::Any? = nil,

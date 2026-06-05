@@ -21,8 +21,7 @@ module CrystalLLM
   #   `usage[key] || usage[key.to_sym]`; here keys are always strings, so
   #   `usage_value` reads the string key only.
   # * `Image.paint` (the class method that resolves a model and calls a provider)
-  #   is DEFERRED: it needs the `Models` registry and a `Provider` instance, neither
-  #   of which is ported yet. See `deferrals`.
+  #   lives in `provider_media.cr` (alongside the paint pipeline it drives).
   # * `#cost` / `#model_info` are ported. `#model_info` resolves the model via
   #   `Models.find(model_id)` (ruby_llm's `RubyLLM.models.find`), swallowing
   #   `ModelNotFoundError` to nil. `#cost` builds a `Cost` in the `:images`
@@ -105,7 +104,7 @@ module CrystalLLM
       end
     end
 
-    # NOTE: `Image.paint` is deferred (needs Models registry + Provider instance).
+    # NOTE: `Image.paint` (the class-method entry point) lives in provider_media.cr.
 
     @tokens : Tokens?
     @model_info : Model::Info?

@@ -19,6 +19,17 @@
 #   via the awscr-signer shard) and the sync/stream/list pipeline merges those headers
 #   into every request. Specs assert the signed-header shape structurally — NO live AWS.
 #
+# NOT PORTED (tracked gaps — re-port candidates if a need surfaces):
+# - `normalize_params` + `model_supports_top_k?` (ruby_llm Bedrock::Chat): ruby_llm
+#   strips a `top_k` param for models that don't support it before merging into the
+#   Converse payload. The Crystal port has no top_k param plumbing, so nothing to
+#   normalize yet — re-port alongside arbitrary-param passthrough if added.
+# - Bedrock-specific `parse_error` (ruby_llm Bedrock overrides it to dig the AWS
+#   `message`/`Message` envelope): the port uses the base `Provider#parse_error`
+#   (OpenAI-shaped `error.message`), which does NOT match Bedrock's error body. A
+#   Bedrock error currently falls through to the raw body. Re-port if precise Bedrock
+#   error messages are needed.
+#
 # Other divergences (documented at each hook):
 # - `@model` instance state: ruby_llm stashes `@model` in render_payload and reads it
 #   in completion_url/stream_url/effort config. The port threads the model through the

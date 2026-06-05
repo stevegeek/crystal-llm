@@ -258,7 +258,7 @@ describe CrystalLLM::Providers::Bedrock do
       payload["messages"].as_a.size.should eq(1)
     end
 
-    it "renders a toolConfig from a tool and mirrors it under tools" do
+    it "renders a toolConfig from a tool with no top-level tools mirror" do
       provider = configured_bedrock
       tool = CrystalLLM::DynamicTool.new(
         "get_weather", "Look up the weather",
@@ -282,8 +282,10 @@ describe CrystalLLM::Providers::Bedrock do
       tool_spec["name"].as_s.should eq("get_weather")
       tool_spec["description"].as_s.should eq("Look up the weather")
       tool_spec["inputSchema"].as_h["json"].as_h["type"].as_s.should eq("object")
-      # internal mirror present for spec inspection (ruby_llm parity)
-      payload["tools"].as_a.size.should eq(1)
+      # No redundant top-level `tools` mirror leaks onto the Converse request — real
+      # tools live under toolConfig.tools (the mirror existed in ruby_llm only to be
+      # deleted before signing; that delete step collapsed away in the port).
+      payload.has_key?("tools").should be_false
     end
 
     it "emits toolConfig.toolChoice from tool_prefs (named tool)" do

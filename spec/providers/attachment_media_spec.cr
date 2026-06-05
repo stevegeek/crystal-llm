@@ -180,8 +180,7 @@ describe "attachment media formatting" do
 
   describe CrystalLLM::Providers::VertexAI::Media do
     it "emits an inline_data image part (Gemini wire shape)" do
-      result = CrystalLLM::Providers::VertexAI::Media.format_content(png_content)
-      parts = result.as_a
+      parts = CrystalLLM::Providers::VertexAI::Media.format_content(png_content)
       parts.size.should eq(2)
 
       parts[0].as_h["text"].as_s.should eq("look at this")
@@ -191,14 +190,13 @@ describe "attachment media formatting" do
     end
 
     it "no longer raises on a Content carrying an attachment" do
-      result = CrystalLLM::Providers::VertexAI::Media.format_content(pdf_content)
-      parts = result.as_a
+      parts = CrystalLLM::Providers::VertexAI::Media.format_content(pdf_content)
       parts[1].as_h["inline_data"].as_h["mime_type"].as_s.should eq("application/pdf")
     end
 
     it "keeps bare text working (no regression)" do
-      result = CrystalLLM::Providers::VertexAI::Media.format_content("hi")
-      result.as_a[0].as_h["text"].as_s.should eq("hi")
+      parts = CrystalLLM::Providers::VertexAI::Media.format_content("hi")
+      parts[0].as_h["text"].as_s.should eq("hi")
     end
   end
 

@@ -450,4 +450,40 @@ describe CrystalLLM::Providers::Gemini do
       models[0].max_output_tokens.should eq(8_192)
     end
   end
+
+  describe "#format_tool_call (thoughtSignature fallback)" do
+    it "borrows the message thinking signature for the first call lacking one" do
+      provider = configured_gemini
+      tool_calls = {
+        "a" => CrystalLLM::ToolCall.new(id: "a", name: "first", arguments: {} of String => JSON::Any),
+        "b" => CrystalLLM::ToolCall.new(id: "b", name: "second", arguments: {} of String => JSON::Any,
+          thought_signature: "own-sig"),
+      }
+      msg = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant,
+        tool_calls: tool_calls,
+        thinking: CrystalLLM::Thinking.new(text: "reasoning", signature: "fallback-sig")
+      )
+
+      parts = provider.format_tool_call(msg)
+      sig_a = parts[0].as_h["thoughtSignature"]?.try(&.as_s)
+      sig_b = parts[1].as_h["thoughtSignature"]?.try(&.as_s)
+
+      # First call has no own signature -> borrows the message fallback (once).
+      sig_a.should eq("fallback-sig")
+      # Second call keeps its own; the fallback was already used.
+      sig_b.should eq("own-sig")
+    end
+
+    it "omits thoughtSignature when there is neither an own nor a fallback signature" do
+      provider = configured_gemini
+      tool_calls = {
+        "a" => CrystalLLM::ToolCall.new(id: "a", name: "first", arguments: {} of String => JSON::Any),
+      }
+      msg = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, tool_calls: tool_calls)
+
+      parts = provider.format_tool_call(msg)
+      parts[0].as_h.has_key?("thoughtSignature").should be_false
+    end
+  end
 end

@@ -24,14 +24,18 @@ module CrystalLLM
     end
 
     def get(url : String, headers : Hash(String, String) = {} of String => String) : Crest::Response
-      with_retries do
-        request(:get, full_url(url), nil, headers)
+      instrument_request(:get, url) do
+        with_retries do
+          request(:get, full_url(url), nil, headers)
+        end
       end
     end
 
     def post(url : String, payload : String, headers : Hash(String, String) = {} of String => String) : Crest::Response
-      with_retries do
-        request(:post, full_url(url), payload, headers)
+      instrument_request(:post, url) do
+        with_retries do
+          request(:post, full_url(url), payload, headers)
+        end
       end
     end
 
@@ -121,6 +125,29 @@ module CrystalLLM
     # contexts; the exact value is unimportant — only that retries are spread).
     private def deterministic_jitter(attempt : Int32) : Float64
       ((attempt * 2654435761_u32) % 1000) / 1000.0
+    end
+
+    # Wraps a request in a `request.crystal_llm` instrumentation event (ruby_llm's
+    # connection.rb `instrument_request`). Builds a `{provider, method, url}` payload,
+    # runs `block` through the configured instrumenter (transparent no-op when none),
+    # and records the response status before returning. `basic_get` is a class method
+    # with no `@provider`, so it never reaches this seam (it issues an un-instrumented
+    # bare GET — matching ruby_llm's `Connection.basic`).
+    private def instrument_request(method : Symbol, url : String,
+                                   &block : -> Crest::Response) : Crest::Response
+      payload = {
+        "provider" => @provider.slug,
+        "method"   => method.to_s,
+        "url"      => url,
+      } of String => Instrumentation::Value
+
+      # `block` is captured here (a Proc), so the inner instrument block can call it
+      # directly — `yield` is not permitted inside a captured/proc literal.
+      Instrumentation.instrument("request.crystal_llm", payload, config: @config) do
+        response = block.call
+        payload["status"] = response.status_code
+        response
+      end
     end
 
     private def provider_headers : Hash(String, String)

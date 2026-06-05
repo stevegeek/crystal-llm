@@ -154,18 +154,8 @@ module CrystalLLM
         if msg.tool_call?
           format_tool_call(msg)
         else
-          format_message_parts(msg)
+          Media.format_content(msg.content)
         end
-      end
-
-      private def format_message_parts(msg : Message) : Array(JSON::Any)
-        content = msg.content
-        formatted = Media.format_content(format_content_arg(content))
-        formatted.as_a? || [formatted]
-      end
-
-      private def format_content_arg(content : String | Content | Nil) : String | Content | Content::Raw | Nil
-        content
       end
 
       # ---- Response content extraction ----

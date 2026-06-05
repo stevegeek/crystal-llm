@@ -93,7 +93,6 @@ end
 
 require "./ollama/models"
 require "./ollama/capabilities"
-require "./ollama/embeddings"
 
 # Register the provider (ruby_llm: `RubyLLM::Provider.register('ollama', ...)`).
 CrystalLLM::Provider.register("ollama", CrystalLLM::Providers::Ollama)

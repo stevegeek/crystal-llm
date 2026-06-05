@@ -1,7 +1,6 @@
 require "../spec_helper"
 require "../../src/crystal_llm/provider_media"
 require "../../src/crystal_llm/providers/ollama"
-require "../../src/crystal_llm/providers/ollama/embeddings"
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(

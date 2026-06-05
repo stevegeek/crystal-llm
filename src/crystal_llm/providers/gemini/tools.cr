@@ -13,8 +13,8 @@
 # - JSON-schema keys arrive as Strings on the wire (JSON::Any), so the Ruby
 #   string-or-symbol key lookups collapse to plain String keys.
 # - SecureRandom.uuid -> UUID.random for the synthetic tool-call id.
-# - `build_tool_config` (toolConfig / functionCallingConfig) is ported but unused
-#   by render_payload (tool_prefs deferred at the pipeline level — see gemini.cr).
+# - `build_tool_config` (toolConfig / functionCallingConfig) is wired into
+#   render_payload (when `tool_prefs["choice"]` is set — see gemini/chat.cr).
 require "json"
 require "uuid"
 require "../gemini"
@@ -225,6 +225,11 @@ module CrystalLLM
           Media.format_content(content).each { |part| parts << part }
         end
 
+        # ruby_llm gemini/tools.rb: when a tool call carries no thoughtSignature, the
+        # FIRST such call borrows the message-level thinking signature (used once).
+        fallback_signature = msg.thinking.try(&.signature)
+        used_fallback = false
+
         if tool_calls = msg.tool_calls
           tool_calls.each do |_, tool_call|
             call = {
@@ -232,9 +237,14 @@ module CrystalLLM
               "args" => JSON::Any.new(tool_call.arguments),
             } of String => JSON::Any
             part = {"functionCall" => JSON::Any.new(call)} of String => JSON::Any
-            if sig = tool_call.thought_signature
-              part["thoughtSignature"] = JSON::Any.new(sig)
+
+            signature = tool_call.thought_signature
+            if signature.nil? && (fb = fallback_signature) && !used_fallback
+              signature = fb
+              used_fallback = true
             end
+            part["thoughtSignature"] = JSON::Any.new(signature) if signature
+
             parts << JSON::Any.new(part)
           end
         end

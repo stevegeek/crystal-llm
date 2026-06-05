@@ -337,20 +337,37 @@ describe CrystalLLM::Providers::OpenRouter do
     end
   end
 
-  describe "Capabilities.supported_parameters_to_capabilities" do
+  # supported_parameters_to_capabilities is a private models.cr helper (mirroring
+  # ruby_llm's openrouter/models.rb); it is exercised through the public
+  # parse_list_models_response surface rather than called directly.
+  describe "supported_parameters -> capabilities (via #parse_list_models_response)" do
     it "maps supported_parameters to capability strings" do
-      caps = CrystalLLM::Providers::OpenRouter::Capabilities
-      params = JSON.parse(%(["tools", "response_format", "batch"]))
-      result = caps.supported_parameters_to_capabilities(params)
-      result.should contain("streaming")
-      result.should contain("function_calling")
-      result.should contain("structured_output")
-      result.should contain("batch")
+      body = <<-JSON
+      {
+        "data": [
+          {
+            "id": "x/y",
+            "name": "Y",
+            "supported_parameters": ["tools", "response_format", "batch"]
+          }
+        ]
+      }
+      JSON
+      model = configured_openrouter.parse_list_models_response(
+        build_response(200, body), "openrouter", CrystalLLM::Providers::OpenRouter.capabilities
+      ).first
+      model.capabilities.should contain("streaming")
+      model.capabilities.should contain("function_calling")
+      model.capabilities.should contain("structured_output")
+      model.capabilities.should contain("batch")
     end
 
-    it "returns empty for nil supported_parameters" do
-      caps = CrystalLLM::Providers::OpenRouter::Capabilities
-      caps.supported_parameters_to_capabilities(nil).should be_empty
+    it "yields no capabilities when supported_parameters is absent (nil -> [])" do
+      body = %({"data": [{"id": "x/y", "name": "Y"}]})
+      model = configured_openrouter.parse_list_models_response(
+        build_response(200, body), "openrouter", CrystalLLM::Providers::OpenRouter.capabilities
+      ).first
+      model.capabilities.should be_empty
     end
   end
 end

@@ -1,7 +1,6 @@
 require "../spec_helper"
 require "../../src/crystal_llm/provider_media"
 require "../../src/crystal_llm/providers/gpustack"
-require "../../src/crystal_llm/providers/gpustack/embeddings"
 
 # GPUStack media (embeddings) — fixture-only, no network. GPUStack subclasses
 # Providers::OpenAI and (matching ruby_llm, which ships no gpustack/embeddings.rb)

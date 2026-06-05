@@ -18,10 +18,9 @@ module CrystalLLM
     def initialize(@vectors : Vectors, @model : String, @input_tokens : Int32 = 0)
     end
 
-    # DEFERRED: `Embedding.embed(text, model:, provider:, ...)` (ruby_llm's class
-    # method) needs the Models registry + a Provider instance + the instrumentation
-    # seam — none of which are ported yet. Deferred until Provider/Models land
-    # (tracked in PORTING.md). The data class + shape helpers below are complete.
+    # `Embedding.embed(text, model:, provider:, ...)` (ruby_llm's class method)
+    # lives in `provider_media.cr` (it resolves a model + Provider instance and
+    # runs the embed pipeline). The data class + shape helpers below are complete.
 
     # Number of dimensions per vector. For a batch, inspects the first row.
     # Mirrors ruby_llm's `Embedding.vector_dimensions`.

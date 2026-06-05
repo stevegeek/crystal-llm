@@ -3,8 +3,9 @@
 # OpenRouter's `/models` returns a much richer per-model record than OpenAI's
 # (architecture input/output modalities, per-million pricing, supported_parameters,
 # top_provider limits). Capabilities are derived from the provider-supplied
-# `supported_parameters` list (see Capabilities.supported_parameters_to_capabilities)
-# rather than from a model-id pattern table.
+# `supported_parameters` list (see #supported_parameters_to_capabilities) rather than
+# from a model-id pattern table — mirroring ruby_llm's openrouter/models.rb, which
+# defines that helper privately on the Models mixin (NOT a Capabilities class).
 #
 # Divergences from ruby_llm's openrouter/models.rb:
 # - `response.body` is a raw String (Crest); JSON.parse it here.
@@ -42,7 +43,7 @@ module CrystalLLM
 
           modalities = build_modalities(row)
           pricing = build_pricing(row)
-          caps = OpenRouter::Capabilities.supported_parameters_to_capabilities(row["supported_parameters"]?)
+          caps = supported_parameters_to_capabilities(row["supported_parameters"]?)
 
           created_at = nil
           if created = row["created"]?
@@ -65,6 +66,28 @@ module CrystalLLM
             metadata: build_metadata(row)
           )
         end
+      end
+
+      # Maps an OpenRouter `supported_parameters` list to CrystalLLM capability
+      # strings. `streaming` is always present; the rest gate on specific params.
+      # Mirrors ruby_llm openrouter/models.rb#supported_parameters_to_capabilities
+      # (a private Models helper, not a separate Capabilities class).
+      private def supported_parameters_to_capabilities(params : JSON::Any?) : Array(String)
+        list = params.try(&.as_a?)
+        return [] of String if list.nil?
+
+        names = list.compact_map(&.as_s?)
+        capabilities = [] of String
+        capabilities << "streaming"
+        if names.includes?("tools") || names.includes?("tool_choice")
+          capabilities << "function_calling"
+        end
+        capabilities << "structured_output" if names.includes?("response_format")
+        capabilities << "batch" if names.includes?("batch")
+        if names.includes?("logit_bias") && names.includes?("top_k")
+          capabilities << "predicted_outputs"
+        end
+        capabilities
       end
 
       private def build_modalities(row : Hash(String, JSON::Any)) : Model::Modalities

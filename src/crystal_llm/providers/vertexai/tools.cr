@@ -32,25 +32,16 @@ module CrystalLLM
         parts = [] of JSON::Any
 
         content = msg.content
-        if content.is_a?(String) && !content.empty?
-          formatted = Media.format_content(content)
-          if arr = formatted.as_a?
-            parts.concat(arr)
-          else
-            parts << formatted
-          end
-        elsif content.is_a?(Content)
-          formatted = Media.format_content(content)
-          if arr = formatted.as_a?
-            parts.concat(arr)
-          else
-            parts << formatted
-          end
+        if content && !(content.is_a?(String) && content.empty?)
+          Media.format_content(content).each { |part| parts << part }
         end
 
-        # NOTE: ruby_llm falls back to msg.thinking.signature for the first tool call
-        # when the call itself has no thoughtSignature; Message#thinking is deferred in
-        # CrystalLLM, so that fallback is omitted (documented divergence).
+        # ruby_llm gemini/tools.rb (Vertex shares the wire format): when a tool call
+        # carries no thoughtSignature, the FIRST such call borrows the message-level
+        # thinking signature (used once).
+        fallback_signature = msg.thinking.try(&.signature)
+        used_fallback = false
+
         if tool_calls = msg.tool_calls
           tool_calls.each_value do |tool_call|
             function_call = {
@@ -58,9 +49,14 @@ module CrystalLLM
               "args" => JSON::Any.new(tool_call.arguments),
             } of String => JSON::Any
             part = {"functionCall" => JSON::Any.new(function_call)} of String => JSON::Any
-            if signature = tool_call.thought_signature
-              part["thoughtSignature"] = JSON::Any.new(signature)
+
+            signature = tool_call.thought_signature
+            if signature.nil? && (fb = fallback_signature) && !used_fallback
+              signature = fb
+              used_fallback = true
             end
+            part["thoughtSignature"] = JSON::Any.new(signature) if signature
+
             parts << JSON::Any.new(part)
           end
         end
@@ -72,15 +68,15 @@ module CrystalLLM
       def format_tool_result(msg : Message, function_name : String? = nil) : Array(JSON::Any)
         name = function_name || msg.tool_call_id || ""
         content = msg.content
-        formatted = if content.nil? || (content.is_a?(String) && content.empty?)
-                      Media.format_content("(no output)")
-                    else
-                      Media.format_content(content)
-                    end
+        content_value : Array(JSON::Any) = if content.nil? || (content.is_a?(String) && content.empty?)
+          Media.format_content("(no output)")
+        else
+          Media.format_content(content)
+        end
 
         response = {
           "name"    => JSON::Any.new(name),
-          "content" => formatted,
+          "content" => JSON::Any.new(content_value),
         } of String => JSON::Any
 
         [JSON::Any.new({

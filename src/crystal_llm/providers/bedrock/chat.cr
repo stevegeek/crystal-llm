@@ -57,8 +57,12 @@ module CrystalLLM
 
         if tool_config = render_tool_config(tools, tool_prefs)
           payload["toolConfig"] = JSON::Any.new(tool_config)
-          # Internal mirror for shared payload inspections in specs (ruby_llm parity).
-          payload["tools"] = tool_config["tools"]
+          # NOTE: ruby_llm sets a top-level `payload[:tools]` mirror here, but it exists
+          # ONLY so `api_payload` can delete it before SigV4 signing (a spec-inspection
+          # affordance never sent on the wire). The Crystal port collapsed that delete
+          # step, so mirroring the key here would LEAK a redundant top-level `tools`
+          # onto every Converse request (sync + stream). Real tools live under
+          # `toolConfig.tools` (render_tool_config) — do NOT re-add the mirror.
         end
 
         if additional_fields = render_additional_model_request_fields(thinking, model)

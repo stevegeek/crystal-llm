@@ -405,8 +405,9 @@ module CrystalLLM
     # As in the Ruby gem, this validates the schema first (raising on a circular
     # `$ref`) and emits `$defs` when any definitions are present.
     #
-    # NOTE (still deferred): conditional (`allOf`/`dependent*`) merging is not
-    # yet ported, so that block is omitted from the output.
+    # Conditional (`allOf`/`if`/`then`/`else`/`dependent*`) merging IS ported:
+    # `merge_conditions` (below) folds `given`/`requires:`/`dependent` into the
+    # output schema.
     def to_json_schema : Hash(String, JSON::Any)
       validate!
 
@@ -914,7 +915,7 @@ module CrystalLLM
     # Raised when a schema definition is malformed.
     class InvalidSchemaError < Error; end
 
-    # Raised when runtime validation fails (validator deferred).
+    # Raised when runtime validation fails (see `Validator`, e.g. a circular `$ref`).
     class ValidationError < Error; end
   end
 end

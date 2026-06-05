@@ -14,10 +14,10 @@
 # inline_data + text, matching Gemini::Media exactly.
 #
 # Divergences from ruby_llm / the Gemini Crystal port:
-# - VertexAI::Media.format_content returns JSON::Any (wrapping an Array of parts), where
-#   the Gemini port returns Array(JSON::Any). VertexAI's chat.cr (format_message_parts)
-#   consumes a JSON::Any and unwraps with `.as_a? || [formatted]`; this preserves the
-#   Content::Raw passthrough (which may be a non-array value) without re-wrapping.
+# - format_content returns Array(JSON::Any) (exactly like gemini/media.cr): a list of
+#   part objects. A Content::Raw value is unwrapped if it is already an array, else
+#   wrapped in a single-element array — so callers can `concat` uniformly without an
+#   extra `.as_a? || [...]` unwrap at the call site.
 # - Content with no attachments collapses to a single {text} part (ruby_llm builds the
 #   same single-text parts array).
 #
@@ -34,20 +34,22 @@ module CrystalLLM
       module Media
         extend self
 
-        # Returns the Gemini wire `parts` for a message's content. Always a JSON::Any:
-        # a JSON array of part objects, except Content::Raw which passes through verbatim.
-        def format_content(content : String | Content | Content::Raw | Nil) : JSON::Any
+        # Returns the Gemini wire `parts` for a message's content: an Array of part
+        # objects. Mirrors gemini/media.cr — a Content::Raw value is unwrapped when it
+        # is already an array, otherwise wrapped in a single-element array.
+        def format_content(content : String | Content | Content::Raw | Nil) : Array(JSON::Any)
           case content
           when Content::Raw
-            content.value
+            raw = content.value
+            raw.as_a? || [raw]
           when Nil
-            JSON::Any.new([format_text("")])
+            [format_text("")]
           when String
-            JSON::Any.new([format_text(content)])
+            [format_text(content)]
           when Content
-            JSON::Any.new(format_rich_content(content))
+            format_rich_content(content)
           else
-            JSON::Any.new([format_text(content.to_s)])
+            [format_text(content.to_s)]
           end
         end
 

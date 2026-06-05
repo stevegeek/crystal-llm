@@ -16,8 +16,8 @@ require "../anthropic"
 module CrystalLLM
   module Providers
     class Anthropic < Provider
-      # Handles formatting of media content for the Anthropic Messages API (text
-      # paths only — see the file header for the deferred attachment paths).
+      # Handles formatting of media content for the Anthropic Messages API: text
+      # plus image / pdf / text-file attachments (see `format_rich_content`).
       module Media
         extend self
 

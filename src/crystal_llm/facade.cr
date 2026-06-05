@@ -30,18 +30,18 @@
 #   implicit `block_given?`). A no-block variant is also provided to mirror
 #   ruby_llm's `yield ... if block_given?`.
 #
-# == DEFERRED (returned) ==
+# == Media facade entry points (live in provider_media.cr) ==
 #
-# The following ruby_llm.rb class methods are NOT ported here because the
-# provider-side methods they call have not been ported yet (per task scope):
+# The following ruby_llm.rb class methods ARE ported, but their definitions live in
+# `provider_media.cr` (alongside the provider-side methods they call) rather than
+# here, so the media pipeline stays in one file:
 #
-# * `embed(...)`      → `Embedding.embed` — needs the embeddings provider methods.
-# * `paint(...)`      → `Image.paint` — needs the image-generation provider methods.
-# * `transcribe(...)` → `Transcription.transcribe` — needs the transcription
-#                       provider methods.
-# * `moderate(...)`   → `Moderation.moderate` — needs the moderation provider methods.
+# * `embed(...)`      → `Embedding.embed`      (provider_media.cr).
+# * `paint(...)`      → `Image.paint`          (provider_media.cr).
+# * `transcribe(...)` → `Transcription.transcribe` (provider_media.cr).
+# * `moderate(...)`   → `Moderation.moderate`  (provider_media.cr).
 #
-# Also deferred (not facade-shaped, belong to later ports):
+# Not facade-shaped (belongs elsewhere):
 # * The `Provider.register :anthropic, ...` (etc.) registration block at the bottom
 #   of ruby_llm.rb — each provider file self-registers at require time (see e.g.
 #   `providers/openai.cr`'s trailing `Provider.register("openai", ...)`).

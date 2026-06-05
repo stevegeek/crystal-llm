@@ -12,24 +12,22 @@
 # OpenAI provider is used only as a STRUCTURAL template (same provider hooks), not a
 # payload template.
 #
-# DEFERRED (per task scope — CHAT path only):
+# Scope notes:
 # - Embeddings / image / moderation / transcription provider methods: NOT ported
 #   (Anthropic only ships embeddings as an extra mixin upstream; the others are
 #   absent). Anthropic::Embeddings is intentionally not ported.
-# - Rich attachment media formatting (format_image/format_pdf/format_text_file and
-#   per-attachment dispatch): DEFERRED with the attachment-provider port (needs
-#   Attachment#url?/#encoded/#mime_type/#for_llm). Only the text / Raw / Hash / Array
-#   content paths chat needs are ported; a Content carrying attachments raises a clear
-#   "deferred" error rather than silently dropping them.
+# - Rich attachment media formatting IS ported (see anthropic/media.cr:
+#   format_image / format_pdf / format_text_file + per-attachment dispatch via
+#   Attachment#for_llm). Audio/video/unknown attachments raise
+#   UnsupportedAttachmentError (matching ruby_llm), not a "deferred" stub.
 # - Hard auth: none required beyond the api key (x-api-key); no OAuth/region/STS.
 #
 # Other divergences (documented at each site):
-# - `tool_prefs` (tool_choice / parallel control) is omitted from render_payload (the
-#   completion pipeline defers it — see provider_completion.cr). build_tool_choice is
-#   still ported for when the chat/agent layer wires tool_prefs back in.
-# - Message has no `thinking` keyword yet (Message#thinking is deferred — see
-#   message.cr); parse_completion_response/build_chunk extract thinking text/signature
-#   but do NOT attach it to the Message/Chunk. Token-level thinking_tokens ARE wired.
+# - `tool_prefs` (tool_choice / parallel control) IS emitted by render_payload (see
+#   anthropic/chat.cr → `Tools.build_tool_choice(choice, calls)`).
+# - Message#thinking IS wired: parse_completion_response/build_chunk extract thinking
+#   text/signature and attach it via `Thinking.build` (see anthropic/chat.cr,
+#   anthropic/streaming.cr). Token-level thinking_tokens are wired too.
 # - `response.body` is a raw String (Crest); JSON.parse it in-method (ruby_llm's
 #   Faraday json middleware pre-parses).
 # - Symbols-as-runtime-data (:auto/:any/:tool roles) become String/enum (design §11).

@@ -20,10 +20,10 @@
 #   matches ruby_llm (Mistral does not override it). The thinking-*payload* shaping
 #   (reasoning_effort / prompt_mode / reasoning) operates on `Thinking::Config` and
 #   IS ported.
-# - `tool_choice` is sourced from a `tool_choice` payload key written by the chat/
-#   agent layer (tool_prefs), which is itself deferred from render_payload (see
-#   provider_completion.cr). `normalize_required_tool_choice` is ported so it runs
-#   if/when a "tool_choice" key is present in the merged payload.
+# - `tool_choice` is written into the payload by the inherited OpenAI render_payload
+#   from `tool_prefs` (via `super`). `normalize_required_tool_choice` then rewrites a
+#   "required" choice into Mistral's "any" sentinel (or a named-function object when
+#   exactly one tool is present).
 # - `warn_on_unsupported_thinking` logs via CrystalLLM.logger in ruby_llm; the
 #   top-level logger is deferred (PORTING.md), so the unsupported-thinking branch
 #   silently drops reasoning_effort here (no warn). Documented divergence.

@@ -1,6 +1,7 @@
 require "./spec_helper"
 require "../src/crystal_llm/provider"
 require "../src/crystal_llm/provider_completion"
+require "../src/crystal_llm/providers/anthropic"
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
@@ -27,6 +28,36 @@ describe CrystalLLM::Provider do
       CrystalLLM::Provider.register("provider_spec_dummy", ProviderSpecDummy)
       CrystalLLM::Provider.resolve("provider_spec_dummy").should eq(ProviderSpecDummy)
       CrystalLLM::Provider.resolve("nope").should be_nil
+    end
+  end
+
+  describe "locality / model resolution (ruby_llm parity)" do
+    it "defaults to remote (class + instance)" do
+      ProviderSpecDummy.local?.should be_false
+      ProviderSpecDummy.remote?.should be_true
+      ProviderSpecDummy.assume_models_exist?.should be_false
+
+      config = CrystalLLM::Configuration.new
+      config.http_proxy = "set"
+      provider = ProviderSpecDummy.new(config)
+      provider.local?.should be_false
+      provider.remote?.should be_true
+      provider.assume_models_exist?.should be_false
+    end
+
+    it "resolves a provider class for a model via Provider.for" do
+      CrystalLLM::Provider.for("claude-3-5-haiku-20241022").should eq(CrystalLLM::Providers::Anthropic)
+    end
+
+    it "partitions the registry into local/remote/configured-remote providers" do
+      CrystalLLM::Provider.register("provider_spec_dummy", ProviderSpecDummy)
+      CrystalLLM::Provider.remote_providers.should contain(ProviderSpecDummy)
+      CrystalLLM::Provider.local_providers.should_not contain(ProviderSpecDummy)
+
+      config = CrystalLLM::Configuration.new
+      CrystalLLM::Provider.configured_remote_providers(config).should_not contain(ProviderSpecDummy)
+      config.http_proxy = "set"
+      CrystalLLM::Provider.configured_remote_providers(config).should contain(ProviderSpecDummy)
     end
   end
 

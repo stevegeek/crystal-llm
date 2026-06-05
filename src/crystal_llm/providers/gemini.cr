@@ -12,17 +12,16 @@
 # `CrystalLLM::Capabilities` subclass (see provider_completion.cr for why
 # Capabilities is a class hierarchy).
 #
-# DEFERRED (per task scope — CHAT path only):
-# - Embeddings / Images / Transcription / (no Moderation on Gemini) provider
-#   methods (gemini/{embeddings,images,transcription}.rb) are NOT ported.
-# - Rich attachment / media formatting: only the text / Raw / Hash|Array content
-#   paths chat needs are ported (gemini/media.cr). A Content carrying real
-#   attachments raises a clear "deferred" error rather than silently dropping
-#   them — the inline_data path depends on Attachment#encoded/#mime_type/#type,
-#   part of the still-unported attachment-provider surface.
+# Scope notes:
+# - Embeddings / Images / Transcription provider methods (no Moderation on Gemini)
+#   ARE ported — see gemini/{embeddings,images,transcription}.cr (they feed the
+#   provider_media.cr pipeline).
+# - Rich attachment / media formatting IS ported (gemini/media.cr): binary
+#   attachments (image/audio/pdf/video) become `inline_data` parts, text-files
+#   inline as text, document/unknown raise UnsupportedAttachmentError.
 # - `build_response_content` (inline/file attachment reconstruction on the parse
-#   side) is DEFERRED with the same attachment surface; parse_completion_response
-#   collapses parts to joined text only.
+#   side) is DEFERRED: parse_completion_response still collapses parts to joined
+#   text only (see extract_text_parts).
 # PORTED (2026-06-05): Structured-output schema translation. The recursive
 # GeminiSchema rewriter (uppercase TYPE values, propertyOrdering, nullable, anyOf
 # collapse, $ref/$defs resolution-or-strip) plus the responseJsonSchema-vs-
@@ -30,12 +29,12 @@
 # SHARED with VertexAI. render_payload's `structured_output_config` delegates to it.
 #
 # Other divergences (see also the sub-files):
-# - Crystal's `Message`/`Chunk` carry NO `thinking:` field yet (Message#thinking is
-#   deferred — see message.cr); so parse_completion_response/build_chunk extract
-#   text content + thinking_tokens but DROP thinking text/signature. Documented.
-# - `tool_prefs:`/`toolConfig` (tool_choice) is deferred at the completion-pipeline
-#   level (render_payload has no tool_prefs param — see provider_completion.cr);
-#   `build_tool_config` is still ported for when the chat/agent layer wires it in.
+# - Message#thinking IS wired: parse_completion_response/build_chunk extract thought
+#   parts + thoughtSignature into `Thinking.build` (see gemini/chat.cr,
+#   gemini/streaming.cr), alongside thinking_tokens.
+# - `tool_prefs:`/`toolConfig` (tool_choice) IS emitted by render_payload: when
+#   `choice` is set it builds `toolConfig.functionCallingConfig` via
+#   `build_tool_config(choice)` (see gemini/chat.cr).
 # - `@model` (ruby_llm sets an ivar in render_payload that completion_url/stream_url
 #   read) becomes an instance var `@model_id` set in render_payload; completion_url/
 #   stream_url read it (raising if render_payload hasn't run — same coupling as Ruby).

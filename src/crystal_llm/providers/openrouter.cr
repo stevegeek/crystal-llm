@@ -1,6 +1,6 @@
 # ported from lib/ruby_llm/providers/openrouter*.rb @ ruby_llm 1.15.0
 #
-# OpenRouter chat provider: text chat + tools + streaming + models + capabilities.
+# OpenRouter chat provider: text chat + tools + streaming + models.
 # OpenRouter is an OpenAI-compatible aggregator, so this subclasses
 # `CrystalLLM::Providers::OpenAI` and overrides only what differs:
 #   - api_base / headers / configuration (openrouter_api_key, openrouter_api_base)
@@ -8,7 +8,10 @@
 #     `reasoning_effort` string) for thinking config (see openrouter/chat.cr).
 #   - models_url + parse_list_models_response: OpenRouter's `/models` returns a far
 #     richer per-model record (architecture modalities, pricing, supported_parameters)
-#     than OpenAI's, with provider-supplied capabilities (see openrouter/models.cr).
+#     than OpenAI's, with provider-supplied capabilities derived from each model's
+#     `supported_parameters` (a private models.cr helper — see openrouter/models.cr).
+#     The provider's `capabilities` class is inherited from OpenAI (ruby_llm's
+#     OpenRouter likewise ships no Capabilities class).
 # Everything else (completion_url, format_messages, format_role, parse_completion_response,
 # token accounting, tool (de)serialization, build_chunk, parse_error) is inherited
 # unchanged from OpenAI — the wire shapes are identical.
@@ -48,10 +51,6 @@ module CrystalLLM
         h
       end
 
-      def self.capabilities : CrystalLLM::Capabilities.class
-        Capabilities
-      end
-
       def self.configuration_requirements : Array(String)
         ["openrouter_api_key"]
       end
@@ -65,7 +64,6 @@ end
 
 require "./openrouter/chat"
 require "./openrouter/models"
-require "./openrouter/capabilities"
 require "./openrouter/images"
 
 # Register the provider (ruby_llm: `RubyLLM::Provider.register('openrouter', ...)`).
