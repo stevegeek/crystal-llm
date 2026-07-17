@@ -147,11 +147,13 @@ WeatherAssistant.new.ask("What's the weather in Berlin?")
 - **Embeddings:** Generate embeddings with `CrystalLLM.embed`
 - **Moderation:** Content safety with `CrystalLLM.moderate`
 - **Tools:** Let AI call your Crystal code (explicit `param` macro)
+- **Concurrent tools:** Run parallel tool calls concurrently — `with_tools(..., concurrency: true)` or `config.tool_concurrency` (fiber-based)
 - **Agents:** Reusable assistants with `CrystalLLM::Agent`
 - **Structured output:** `with_schema(T)` / `ask_as(T)` + `DynamicTool` escape hatches
 - **Streaming:** Real-time responses with blocks (in-tree SSE parser)
 - **Extended thinking:** Persist and inspect model deliberation (`Message#thinking`)
-- **Model registry:** 800+ models with capability detection (vendored `models.json`)
+- **Model registry:** 1,100+ models with capability detection and models.dev metadata (vendored `models.json`)
+- **Custom endpoints:** Per-provider `*_api_base` config overrides for proxies, gateways, and private endpoints
 - **Instrumentation:** Event hooks via `CrystalLLM.instrument` (`Instrumenter` protocol)
 - **Marten persistence:** See the [`crystal_llm_marten`](https://github.com/stevegeek/crystal-llm-marten) companion shard
 
@@ -180,6 +182,7 @@ wherever possible.
 | Untyped `DynamicTool`-like patterns via `method_missing` | Explicit `DynamicTool` class for runtime-described tools |
 | `Agent` context via `instance_exec` / ERB | Explicit-context Agent API (no `instance_exec`) |
 | Symbols used as runtime data (e.g. roles, event names) | `String` or enums; symbols are compile-time only |
+| Concurrent tools via `:threads` (default) or `:fibers` (async gem) | `"fibers"` only — Crystal's native concurrency IS fibers; `concurrency: true` → `"fibers"`, `"threads"` raises |
 | Faraday HTTP client | [Crest](https://github.com/mamantoha/crest) HTTP client |
 | SSE via server-sent-events gem | In-tree SSE parser |
 | AWS auth via aws-sdk gem | [awscr-signer](https://github.com/taylorfinnell/awscr-signer) shard |
