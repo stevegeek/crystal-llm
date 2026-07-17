@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/content.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/content.rb @ ruby_llm 1.16.0
 require "json"
 require "./attachment"
 
@@ -21,9 +21,17 @@ module CrystalLLM
       end
     end
 
-    def add_attachment(source : Source, filename : String? = nil) : self
-      @attachments << Attachment.new(source, filename: filename)
+    # `source` may be a plain `Source` (String/Path/IO) or an existing `Attachment`
+    # (ruby_llm 9a08dd1c) — reusing an already-loaded Attachment avoids re-reading
+    # its bytes. See `build_attachment`.
+    def add_attachment(source : Source | Attachment, filename : String? = nil) : self
+      @attachments << build_attachment(source, filename: filename)
       self
+    end
+
+    # True when there is no text (nil or empty) and no attachments (ruby_llm a6a02653).
+    def empty? : Bool
+      @attachments.empty? && (@text || "").empty?
     end
 
     # Bare text (no attachments) formats to the String; otherwise to self.
@@ -38,6 +46,19 @@ module CrystalLLM
     # For persistence.
     def to_h
       {text: @text, attachments: @attachments.map(&.to_h)}
+    end
+
+    # An existing `Attachment` is reused as-is; it is only re-wrapped (via its
+    # `source`) when a new `filename` is given. Any other `Source` is wrapped in a
+    # fresh `Attachment`. Mirrors ruby_llm's `build_attachment` (commit 9a08dd1c).
+    private def build_attachment(source : Source | Attachment, filename : String? = nil) : Attachment
+      if source.is_a?(Attachment)
+        return source unless filename
+
+        return Attachment.new(source.source, filename: filename)
+      end
+
+      Attachment.new(source, filename: filename)
     end
 
     private def process_attachments(attachments : Attachable?) : Nil

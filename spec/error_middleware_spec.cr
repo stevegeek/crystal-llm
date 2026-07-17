@@ -39,6 +39,14 @@ describe CrystalLLM::ErrorMiddleware do
       end
     end
 
+    # ruby_llm a66e7005: Anthropic's 400 "prompt is too long: N tokens > max maximum"
+    # was falling through to BadRequestError instead of ContextLengthExceededError.
+    it "maps Anthropic's 'prompt is too long' 400 error to ContextLengthExceededError" do
+      expect_raises(CrystalLLM::ContextLengthExceededError) do
+        CrystalLLM::ErrorMiddleware.parse_error(400, "prompt is too long: 209025 tokens > 200000 maximum")
+      end
+    end
+
     it "keeps regular 400 errors as BadRequestError" do
       expect_raises(CrystalLLM::BadRequestError) do
         CrystalLLM::ErrorMiddleware.parse_error(400, "Invalid model specified")

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/error_middleware.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/error_middleware.rb @ ruby_llm 1.16.0
 require "crest"
 require "./error"
 
@@ -20,6 +20,7 @@ module CrystalLLM
       /input[_\s-]?token/i,
       /input or output tokens? must be reduced/i,
       /reduce the length of messages/i,
+      /prompt is too long/i,
     ]
 
     # Raises the mapped error for 4xx/5xx statuses; returns `message` for 2xx/3xx.

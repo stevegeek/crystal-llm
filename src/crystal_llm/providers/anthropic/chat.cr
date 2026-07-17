@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/anthropic/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/anthropic/chat.rb @ ruby_llm 1.16.0
 #
 # The Anthropic Messages API request/response surface.
 #
@@ -14,8 +14,17 @@
 # - `schema` is a `JSON::Any?` envelope; `build_output_config` strips `strict` and
 #   wraps the inner schema in `{format: {type:"json_schema", schema: ...}}` (Anthropic
 #   structured-output shape), reading with `as_h?`/`dig?` rather than symbol keys.
-# - `thinking` is a `Thinking::Config?`; `build_thinking_payload` reads `.budget`.
-#   When enabled but no budget is set it raises (ruby_llm parity).
+#   The resulting hash MERGES into any `output_config` already set by adaptive
+#   thinking rather than overwriting it (ruby_llm 3f27b864).
+# - `thinking` is a `Thinking::Config?`. `add_thinking_fields`/`build_thinking_payload`
+#   consult the model's registry `reasoning_options` (ruby_llm 3f27b864, "Task 6"
+#   `Model::Info#reasoning_option`) to choose between legacy budget-based thinking
+#   (`{thinking:{type:"enabled",budget_tokens:}}`, gated on the model exposing a
+#   `budget_tokens` reasoning option) and adaptive effort-based thinking
+#   (`{thinking:{type:"adaptive"},output_config:{effort:}}`, gated on `effort`).
+#   `effort == "none"` disables thinking outright. A budget/effort requested on a
+#   model that doesn't advertise the matching reasoning option raises `ArgumentError`
+#   naming the model id (ruby_llm parity).
 # - Thinking round-trip is wired: thinking text + signature are extracted from
 #   response content blocks and attached to the Message (`Thinking.build`); on the
 #   outbound side, `format_message` prepends a `thinking`/`redacted_thinking` block
@@ -88,9 +97,7 @@ module CrystalLLM
           "max_tokens" => JSON::Any.new((model.max_tokens || 4096).to_i64),
         } of String => JSON::Any
 
-        if thinking_payload = build_thinking_payload(thinking)
-          payload["thinking"] = thinking_payload
-        end
+        add_thinking_fields(payload, thinking, model)
 
         payload
       end
@@ -110,9 +117,18 @@ module CrystalLLM
         end
         payload["system"] = JSON::Any.new(system_content) unless system_content.empty?
         payload["temperature"] = JSON::Any.new(temperature) unless temperature.nil?
-        if schema && (output_config = build_output_config(schema))
-          payload["output_config"] = output_config
+        if schema && (schema_output_config = build_output_config(schema))
+          merge_output_config(payload, schema_output_config)
         end
+      end
+
+      # `payload[:output_config] = payload.fetch(:output_config, {}).merge(...)` —
+      # the schema-driven output_config merges onto (rather than overwrites) any
+      # output_config already set by adaptive thinking (ruby_llm 3f27b864).
+      private def merge_output_config(payload : Hash(String, JSON::Any), addition : JSON::Any) : Nil
+        existing = payload["output_config"]?.try(&.as_h?) || {} of String => JSON::Any
+        addition_hash = addition.as_h? || {} of String => JSON::Any
+        payload["output_config"] = JSON::Any.new(Utils.deep_merge(existing, addition_hash))
       end
 
       # Anthropic structured-output: `{format: {type:"json_schema", schema: <inner>}}`
@@ -286,8 +302,12 @@ module CrystalLLM
         end
 
         content_blocks = prepend_thinking_block([] of JSON::Any, msg, thinking_enabled)
-        text = content.is_a?(String) ? content : content.try(&.to_s)
-        content_blocks << Media.format_text(text) if text && !text.empty?
+        # `content` may format to an Array of blocks (text + attachments); concat
+        # rather than nest (ruby_llm a6a02653's `append_formatted_content`).
+        case content
+        when String, CrystalLLM::Content
+          append_formatted_content(content_blocks, content) unless content.empty?
+        end
 
         if calls = msg.tool_calls
           calls.each_value do |tool_call|
@@ -352,18 +372,80 @@ module CrystalLLM
         end
       end
 
-      # `{type:"enabled", budget_tokens: n}` when thinking is enabled with a budget.
-      # Raises when enabled but no budget is set (ruby_llm parity).
-      def build_thinking_payload(thinking : Thinking::Config?) : JSON::Any?
+      # Applies `build_thinking_payload`'s `:thinking` fragment onto `payload["thinking"]`
+      # and merges its `:output_config` fragment onto `payload["output_config"]` (so a
+      # schema-driven output_config set later still combines, not overwrites — see
+      # `add_optional_fields`/`merge_output_config`). Mirrors ruby_llm's `add_thinking_fields`.
+      def add_thinking_fields(payload : Hash(String, JSON::Any), thinking : Thinking::Config?,
+                              model : Model::Info) : Nil
+        thinking_payload = build_thinking_payload(thinking, model)
+        return unless thinking_payload
+
+        if t = thinking_payload["thinking"]?
+          payload["thinking"] = t
+        end
+        return unless output_config = thinking_payload["output_config"]?
+
+        merge_output_config(payload, output_config)
+      end
+
+      # Builds the `{"thinking" => ..., "output_config" => ...}` fragment for a given
+      # thinking config + model, or nil when thinking isn't enabled / is disabled via
+      # `effort: "none"`. Mirrors ruby_llm's `build_thinking_payload(thinking, model)`
+      # (ruby_llm 3f27b864):
+      # - A budget on a model with the `budget_tokens` reasoning option ->
+      #   `enabled_thinking_payload`; on a model without it -> raises ArgumentError.
+      # - Otherwise an effort on a model with the `effort` reasoning option ->
+      #   `adaptive_thinking_payload`; on a model without it -> raises ArgumentError.
+      # - No budget and no (usable) effort -> raises ArgumentError.
+      def build_thinking_payload(thinking : Thinking::Config?, model : Model::Info) : Hash(String, JSON::Any)?
         return nil unless thinking && thinking.enabled?
 
-        budget = thinking.budget
-        raise ArgumentError.new("Anthropic thinking requires a budget") if budget.nil?
+        effort = resolve_effort(thinking)
+        return nil if effort == "none"
 
-        JSON::Any.new({
-          "type"          => JSON::Any.new("enabled"),
-          "budget_tokens" => JSON::Any.new(budget.to_i64),
-        } of String => JSON::Any)
+        if budget = resolve_budget(thinking)
+          return enabled_thinking_payload(budget) if model.reasoning_option("budget_tokens")
+
+          raise ArgumentError.new("Anthropic thinking budget is not supported for #{model.id}")
+        end
+
+        raise ArgumentError.new("Anthropic adaptive thinking requires an effort") if effort.nil?
+        return adaptive_thinking_payload(effort) if model.reasoning_option("effort")
+
+        raise ArgumentError.new("Anthropic thinking effort is not supported for #{model.id}")
+      end
+
+      # `{thinking: {type:"enabled", budget_tokens: n}}`.
+      def enabled_thinking_payload(budget : Int32) : Hash(String, JSON::Any)
+        {
+          "thinking" => JSON::Any.new({
+            "type"          => JSON::Any.new("enabled"),
+            "budget_tokens" => JSON::Any.new(budget.to_i64),
+          } of String => JSON::Any),
+        } of String => JSON::Any
+      end
+
+      # `{thinking: {type:"adaptive"}, output_config: {effort: <effort>}}`.
+      def adaptive_thinking_payload(effort : String) : Hash(String, JSON::Any)
+        {
+          "thinking"      => JSON::Any.new({"type" => JSON::Any.new("adaptive")} of String => JSON::Any),
+          "output_config" => JSON::Any.new({"effort" => JSON::Any.new(effort)} of String => JSON::Any),
+        } of String => JSON::Any
+      end
+
+      # Blank/nil effort normalizes to nil; anything else (including "none") passes
+      # through unchanged. Mirrors ruby_llm's `resolve_effort`.
+      def resolve_effort(thinking : Thinking::Config) : String?
+        effort = thinking.effort
+        effort.nil? || effort.empty? ? nil : effort
+      end
+
+      # `Thinking::Config#budget` is already `Int32?` (design §11: no runtime type
+      # check needed, unlike ruby_llm's `budget.is_a?(Integer)`). Mirrors ruby_llm's
+      # `resolve_budget`.
+      def resolve_budget(thinking : Thinking::Config) : Int32?
+        thinking.budget
       end
 
       # Coerce a JSON::Any numeric to Int32 (token counts).

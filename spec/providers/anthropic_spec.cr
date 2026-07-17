@@ -16,11 +16,32 @@ private def configured_anthropic : CrystalLLM::Providers::Anthropic
 end
 
 private def claude_model : CrystalLLM::Model::Info
+  # Mirrors claude-opus-4-5's real registry shape: both `effort` and
+  # `budget_tokens` reasoning options (ruby_llm 3f27b864 adaptive thinking).
   CrystalLLM::Model::Info.build(
     id: "claude-3-5-sonnet-20241022",
     name: "Claude 3.5 Sonnet",
     provider: "anthropic",
-    max_output_tokens: 8192
+    max_output_tokens: 8192,
+    reasoning_options: [
+      {"type" => JSON::Any.new("effort"), "values" => JSON::Any.new(["low", "medium", "high"].map { |v| JSON::Any.new(v) })},
+      {"type" => JSON::Any.new("budget_tokens"), "min" => JSON::Any.new(1024)},
+    ] of Hash(String, JSON::Any)
+  )
+end
+
+# A model whose registry entry advertises only the given reasoning-option
+# `types` (e.g. "budget_tokens", "effort") — used to exercise the
+# unsupported-combination ArgumentError paths.
+private def claude_model_with_reasoning(*types : String) : CrystalLLM::Model::Info
+  options = [] of Hash(String, JSON::Any)
+  types.each { |type| options << ({"type" => JSON::Any.new(type)} of String => JSON::Any) }
+
+  CrystalLLM::Model::Info.build(
+    id: "claude-reasoning-test",
+    provider: "anthropic",
+    max_output_tokens: 8192,
+    reasoning_options: options
   )
 end
 
@@ -222,6 +243,126 @@ describe CrystalLLM::Providers::Anthropic do
       defn["name"].as_s.should eq("search")
       defn["description"].as_s.should eq("Search the web")
       defn["input_schema"].as_h["type"].as_s.should eq("object")
+    end
+  end
+
+  # ruby_llm 3f27b864: `build_thinking_payload(thinking, model)` now consults the
+  # model's registry `reasoning_options` to decide between legacy budget-based
+  # thinking (`{thinking:{type:"enabled",budget_tokens:}}`) and adaptive
+  # effort-based thinking (`{thinking:{type:"adaptive"},output_config:{effort:}}`),
+  # raising ArgumentError when the model doesn't support the requested shape.
+  describe "adaptive thinking payload (ruby_llm 3f27b864)" do
+    it "emits {type:enabled, budget_tokens} for a budget on a model with the budget_tokens option" do
+      provider = configured_anthropic
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        thinking: CrystalLLM::Thinking::Config.new(budget: 2048)
+      )
+
+      thinking = payload["thinking"].as_h
+      thinking["type"].as_s.should eq("enabled")
+      thinking["budget_tokens"].as_i.should eq(2048)
+      payload.has_key?("output_config").should be_false
+    end
+
+    it "emits {type:adaptive} + output_config:{effort} for an effort on a model with the effort option" do
+      provider = configured_anthropic
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        thinking: CrystalLLM::Thinking::Config.new(effort: "medium")
+      )
+
+      thinking = payload["thinking"].as_h
+      thinking["type"].as_s.should eq("adaptive")
+      payload["output_config"].as_h["effort"].as_s.should eq("medium")
+    end
+
+    it "merges adaptive-thinking output_config with the schema-driven output_config rather than overwriting it" do
+      provider = configured_anthropic
+      schema = JSON.parse(%({"name":"person","schema":{"type":"object","strict":true},"strict":true}))
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        schema: schema,
+        thinking: CrystalLLM::Thinking::Config.new(effort: "high")
+      )
+
+      output_config = payload["output_config"].as_h
+      output_config["effort"].as_s.should eq("high")
+      output_config["format"].as_h["type"].as_s.should eq("json_schema")
+    end
+
+    it "disables thinking for effort:none (no thinking or output_config key emitted)" do
+      provider = configured_anthropic
+      payload = provider.render_payload(
+        [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: claude_model,
+        stream: false,
+        thinking: CrystalLLM::Thinking::Config.new(effort: "none")
+      )
+
+      payload.has_key?("thinking").should be_false
+      payload.has_key?("output_config").should be_false
+    end
+
+    it "raises ArgumentError naming the model when a budget is given for an effort-only model" do
+      provider = configured_anthropic
+      model = claude_model_with_reasoning("effort")
+
+      expect_raises(ArgumentError, /claude-reasoning-test/) do
+        provider.render_payload(
+          [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+          tools: {} of String => CrystalLLM::Tool,
+          temperature: nil,
+          model: model,
+          stream: false,
+          thinking: CrystalLLM::Thinking::Config.new(budget: 1024)
+        )
+      end
+    end
+
+    it "raises ArgumentError naming the model when an effort is given for a budget-only model" do
+      provider = configured_anthropic
+      model = claude_model_with_reasoning("budget_tokens")
+
+      expect_raises(ArgumentError, /claude-reasoning-test/) do
+        provider.render_payload(
+          [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+          tools: {} of String => CrystalLLM::Tool,
+          temperature: nil,
+          model: model,
+          stream: false,
+          thinking: CrystalLLM::Thinking::Config.new(effort: "medium")
+        )
+      end
+    end
+
+    it "raises ArgumentError when adaptive thinking is enabled without an effort" do
+      provider = configured_anthropic
+
+      expect_raises(ArgumentError, "Anthropic adaptive thinking requires an effort") do
+        provider.render_payload(
+          [CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "hi")],
+          tools: {} of String => CrystalLLM::Tool,
+          temperature: nil,
+          model: claude_model,
+          stream: false,
+          thinking: CrystalLLM::Thinking::Config.new(effort: "")
+        )
+      end
     end
   end
 

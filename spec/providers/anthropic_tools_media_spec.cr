@@ -145,6 +145,33 @@ describe "CrystalLLM::Providers::Anthropic::Tools format_tool_call_message" do
     tool_use_blocks.all? { |blk| blk.as_h["name"].as_s == "dice_roll" }.should be_true
   end
 
+  it "formats Content attachments before the tool_use block (ruby_llm a6a02653 append_formatted_content)" do
+    provider = configured_anthropic_tools
+    content = CrystalLLM::Content.new("Read this before calling the tool")
+    content.attachments << pdf_attachment
+    tc = CrystalLLM::ToolCall.new(
+      id: "tool_123", name: "test_tool",
+      arguments: {"arg1" => JSON::Any.new("value1")} of String => JSON::Any
+    )
+    msg = CrystalLLM::Message.new(
+      role: CrystalLLM::Role::Assistant,
+      content: content,
+      tool_calls: {"tool_123" => tc}
+    )
+
+    result = provider.format_message(msg, nil).as_h
+    blocks = result["content"].as_a
+
+    # The Content's blocks (text + document, from Media.format_content) are
+    # concatenated ahead of the tool_use block, not nested as a single element.
+    blocks.size.should eq(3)
+    blocks[0].as_h["type"].as_s.should eq("text")
+    blocks[0].as_h["text"].as_s.should eq("Read this before calling the tool")
+    blocks[1].as_h["type"].as_s.should eq("document")
+    blocks[2].as_h["type"].as_s.should eq("tool_use")
+    blocks[2].as_h["id"].as_s.should eq("tool_123")
+  end
+
   it "does NOT emit an empty text block when content is empty with multiple tool calls" do
     tool_calls = {
       "tool_1" => CrystalLLM::ToolCall.new(
