@@ -10,6 +10,8 @@ you already know CrystalLLM.
 > **Status: full parity with ruby_llm 1.16.0.**
 > Core paths (chat, tools, streaming, structured output, embeddings, image generation,
 > transcription, moderation) are ported and working across all 13 providers.
+> \* One narrow inbound gap: VertexAI doesn't yet parse attachments back out of a
+> response (inline media collapses to text) — see [`PORTING.md`](PORTING.md).
 > See [`PORTING.md`](PORTING.md) for the roadmap and versioning policy.
 
 ---

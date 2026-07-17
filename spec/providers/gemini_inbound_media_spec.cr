@@ -171,11 +171,12 @@ describe "CrystalLLM::Providers::Gemini inbound media" do
     # attachments = nil)` — Ruby silently folded both into a single Hash passed as
     # the `text` positional param, so `@attachments` stayed empty and inline image
     # bytes were dropped. This port's `build_response_content` never had that bug:
-    # it already builds `Content.new(text: text || "")` and pushes the decoded
-    # `Attachment` objects directly onto `content.attachments` (bypassing
-    # `add_attachment`/`process_attachments` entirely, see the divergence note
-    # above `build_response_content`). This spec verifies that already-correct
-    # persistence path rather than re-porting a fix that doesn't apply here.
+    # it builds `Content.new(text, built_attachments)` via the `Array(Attachment)`
+    # positional overload (content.cr), which assigns the already-decoded
+    # `Attachment` objects directly (bypassing `add_attachment`/`process_attachments`
+    # entirely — see the divergence note above `build_response_content`). This spec
+    # verifies that already-correct persistence path rather than re-porting a fix
+    # that doesn't apply here.
     it "parses a pure inline-image response (no text) as a Content with a named attachment" do
       image_bytes = Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
       parts = [

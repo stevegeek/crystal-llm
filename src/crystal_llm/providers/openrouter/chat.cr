@@ -7,9 +7,10 @@
 # and build_chunk are inherited unchanged from OpenAI (identical wire shapes).
 #
 # Divergences from ruby_llm's openrouter/chat.rb:
-# - matches the completion pipeline hook signature (no `tool_prefs`/`tool_choice`/
-#   `parallel_tool_calls` — deferred, see provider_completion.cr). Returns
-#   `Hash(String, JSON::Any)`.
+# - matches the completion pipeline hook signature, including `tool_prefs`: unlike the
+#   header note this replaces, `tool_prefs` is NOT deferred — `render_payload` (below)
+#   reads it and emits `tool_choice` (`build_tool_choice(choice)`) / `parallel_tool_calls`
+#   (`calls == "many"`) the same way OpenAI does. Returns `Hash(String, JSON::Any)`.
 # - `schema` is a `JSON::Any?` envelope (`{name, schema, strict}`); ruby_llm deep-dups
 #   the schema and deletes a nested `strict` before re-wrapping. The port copies the
 #   schema map and drops a top-level "strict" key the same way.
@@ -18,9 +19,12 @@
 # - thinking text/signature extraction into the Message IS wired here. OpenRouter's
 #   reasoning shape differs from OpenAI's: a message carries either a `reasoning`
 #   String or a `reasoning_details` array (`reasoning.text`/`reasoning.summary`/
-#   `reasoning.encrypted` entries). This file overrides `parse_completion_response`
-#   (to read that shape) and `format_thinking` (to re-emit `reasoning_details` on
-#   outbound assistant messages, via the inherited OpenAI `format_messages`).
+#   `reasoning.encrypted` entries). `parse_completion_response` itself is NOT
+#   overridden — it's inherited from OpenAI unchanged (see above) and calls the
+#   `extract_thinking_text`/`extract_thinking_signature` hooks polymorphically; THIS
+#   file overrides those two hooks (to read OpenRouter's shape) plus `format_thinking`
+#   (to re-emit `reasoning_details` on outbound assistant messages, via the inherited
+#   OpenAI `format_messages`).
 require "json"
 require "../openai"
 require "../openrouter"

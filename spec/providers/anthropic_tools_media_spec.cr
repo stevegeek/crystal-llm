@@ -15,6 +15,9 @@ require "../../src/crystal_llm/providers/anthropic"
 # "%PDF" magic sniffed as application/pdf by MimeType
 PDF_MAGIC_TOOLS = "%PDF-1.4\n".to_slice
 
+# An 8-byte PNG signature; MimeType sniffs this as image/png regardless of name.
+PNG_MAGIC_TOOLS = Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+
 # A minimal valid docx (Office Open XML) is a ZIP; we only need a convincing
 # filename so MimeType.for(name:) returns the correct MIME type.
 DOCX_CONTENT_BYTES = "PK\x03\x04".to_slice
@@ -24,6 +27,13 @@ private def pdf_attachment : CrystalLLM::Attachment
   io.write(PDF_MAGIC_TOOLS)
   io.rewind
   CrystalLLM::Attachment.new(io, filename: "report.pdf")
+end
+
+private def image_attachment_tools : CrystalLLM::Attachment
+  io = IO::Memory.new
+  io.write(PNG_MAGIC_TOOLS)
+  io.rewind
+  CrystalLLM::Attachment.new(io, filename: "logo.png")
 end
 
 private def docx_attachment : CrystalLLM::Attachment
@@ -236,6 +246,49 @@ describe "CrystalLLM::Providers::Anthropic::Tools format_tool_result" do
     block = result["content"].as_a[0].as_h
     inner = block["content"].as_a
     inner[0].as_h["text"].as_s.should eq("(no output)")
+  end
+
+  it "routes a Content tool result (text + image attachment) through Media.format_content, not to_s" do
+    content = CrystalLLM::Content.new("Here is the result")
+    content.attachments << image_attachment_tools
+    msg = CrystalLLM::Message.new(
+      role: CrystalLLM::Role::Tool,
+      content: content,
+      tool_call_id: "tool_123"
+    )
+
+    result = CrystalLLM::Providers::Anthropic::Tools.format_tool_result(msg).as_h
+    block = result["content"].as_a[0].as_h
+    block["type"].as_s.should eq("tool_result")
+    block["tool_use_id"].as_s.should eq("tool_123")
+
+    inner = block["content"].as_a
+    inner.size.should eq(2)
+
+    inner[0].as_h["type"].as_s.should eq("text")
+    inner[0].as_h["text"].as_s.should eq("Here is the result")
+
+    image_block = inner[1].as_h
+    image_block["type"].as_s.should eq("image")
+    source = image_block["source"].as_h
+    source["type"].as_s.should eq("base64")
+    source["media_type"].as_s.should eq("image/png")
+    source["data"].as_s.should eq(Base64.strict_encode(PNG_MAGIC_TOOLS))
+  end
+
+  it "renders a text-only Content tool result as a single text block (no stray attachments)" do
+    content = CrystalLLM::Content.new("plain text result")
+    msg = CrystalLLM::Message.new(
+      role: CrystalLLM::Role::Tool,
+      content: content,
+      tool_call_id: "tool_123"
+    )
+
+    result = CrystalLLM::Providers::Anthropic::Tools.format_tool_result(msg).as_h
+    inner = result["content"].as_a[0].as_h["content"].as_a
+    inner.size.should eq(1)
+    inner[0].as_h["type"].as_s.should eq("text")
+    inner[0].as_h["text"].as_s.should eq("plain text result")
   end
 end
 

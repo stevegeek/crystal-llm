@@ -80,15 +80,20 @@ module CrystalLLM
           } of String => JSON::Any)
         end
 
+        # The `content` routes the raw message content through `Media.format_content`
+        # (not `to_s`), so a `Content` with image/pdf/text attachments becomes native
+        # content blocks rather than a stringified blob. nil/empty content substitutes
+        # the `'(no output)'` placeholder. Mirrors ruby_llm's `format_tool_result_block`.
         def format_tool_result_block(msg : Message) : JSON::Any
           content = msg.content
-          text = content.is_a?(String) ? content : content.try(&.to_s)
-          text = "(no output)" if text.nil? || text.empty?
+          content = "(no output)" if content.nil? ||
+                                     (content.is_a?(String) && content.empty?) ||
+                                     (content.is_a?(CrystalLLM::Content) && content.empty?)
 
           JSON::Any.new({
             "type"        => JSON::Any.new("tool_result"),
             "tool_use_id" => JSON::Any.new(msg.tool_call_id),
-            "content"     => Media.format_content(text),
+            "content"     => Media.format_content(content),
           } of String => JSON::Any)
         end
 
