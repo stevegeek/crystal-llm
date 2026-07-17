@@ -93,6 +93,28 @@ describe CrystalLLM::Providers::Ollama do
     end
   end
 
+  # Direct mirror of upstream's new spec/ruby_llm/providers/ollama/chat_spec.rb
+  # "#format_messages includes empty content when replaying a thinking-only
+  # assistant message" (ruby_llm 1.16.0 / 7088339b). Ollama has no
+  # `format_messages`/`format_message_content` override in this port — both are
+  # inherited from OpenAI (openai/chat.cr), which dispatches to Ollama's own
+  # `format_content` override (ollama/media.cr) polymorphically; see the
+  # divergence notes on openai/chat.cr and gpustack/chat.cr for why one
+  # base-class fix covers this subclass without duplication.
+  describe "#format_messages" do
+    it "includes empty content when replaying a thinking-only assistant message" do
+      thinking = CrystalLLM::Thinking.new(text: "I should reason first")
+      message = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: nil, thinking: thinking)
+      provider = configured_ollama
+
+      formatted = provider.format_messages([message])
+
+      entry = formatted.first.as_h
+      entry["content"].as_s.should eq("")
+      entry["reasoning_content"].as_s.should eq("I should reason first")
+    end
+  end
+
   describe "#render_payload" do
     it "produces the expected Ollama chat JSON for a simple user message + model id" do
       provider = configured_ollama

@@ -101,6 +101,28 @@ describe CrystalLLM::Providers::GPUStack do
     end
   end
 
+  # Direct mirror of upstream's new spec/ruby_llm/providers/gpu_stack/chat_spec.rb
+  # "#format_messages includes empty content when replaying a thinking-only
+  # assistant message" (ruby_llm 1.16.0 / 7088339b). GPUStack has no
+  # `format_messages`/`format_message_content` override in this port — both are
+  # inherited from OpenAI (openai/chat.cr), which dispatches to GPUStack's own
+  # `format_content` override (gpustack/media.cr) polymorphically; see the
+  # divergence notes on both files for why one base-class fix covers this
+  # subclass without duplication.
+  describe "#format_messages" do
+    it "includes empty content when replaying a thinking-only assistant message" do
+      thinking = CrystalLLM::Thinking.new(text: "I should reason first")
+      message = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: nil, thinking: thinking)
+      provider = configured_gpustack
+
+      formatted = provider.format_messages([message])
+
+      entry = formatted.first.as_h
+      entry["content"].as_s.should eq("")
+      entry["reasoning_content"].as_s.should eq("I should reason first")
+    end
+  end
+
   describe "#parse_completion_response" do
     it "turns a GPUStack/OpenAI completion JSON into a Message with content + tokens" do
       body = <<-JSON

@@ -1,8 +1,19 @@
-# ported from lib/ruby_llm/providers/openai/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/chat.rb @ ruby_llm 1.16.0
 #
 # The OpenAI chat completions request/response surface.
 #
 # Divergences:
+# - `format_message_content`/`thinking_only_assistant_message?` (ruby_llm 1.16.0 /
+#   7088339b) live ONLY here, not duplicated per OpenAI-compatible subclass.
+#   Upstream also adds near-identical copies to gpustack/chat.rb and ollama/chat.rb
+#   (each calling `OpenAI::Chat.thinking_only_assistant_message?` but their OWN
+#   module's `format_content`) because ruby_llm's providers are Ruby modules
+#   `include`d into a class, not real subclasses, so `Ollama::Chat` doesn't get
+#   `OpenAI::Chat#format_content` via inheritance. This port's providers ARE real
+#   subclasses (`Ollama < OpenAI`, `GPUStack < OpenAI`), and `format_content` is a
+#   normal (virtual) instance method each overrides — so one `format_message_content`
+#   here, calling the polymorphic `format_content`, already covers every
+#   OpenAI-compatible subclass; see gpustack/chat.cr's divergence note.
 # - `render_payload` matches the completion pipeline's hook signature, including
 #   `tool_prefs` (Chat's `{"choice" => ..., "calls" => ...}` state). When tools are
 #   present, `choice` → `tool_choice` (via `build_tool_choice`) and `calls` →
@@ -174,7 +185,7 @@ module CrystalLLM
         messages.map do |msg|
           entry = {} of String => JSON::Any
           entry["role"] = JSON::Any.new(format_role(msg.role))
-          entry["content"] = format_content(format_content_arg(msg.content))
+          entry["content"] = format_message_content(msg)
           if formatted = format_tool_calls(msg.tool_calls)
             entry["tool_calls"] = formatted
           end
@@ -184,6 +195,29 @@ module CrystalLLM
           format_thinking(msg).each { |k, v| entry[k] = v }
           JSON::Any.new(entry)
         end
+      end
+
+      # A thinking-only assistant message (reasoning present, no text content, no
+      # tool call) formats its content as `""` instead of `null` — some
+      # OpenAI-compatible servers (GPUStack, Ollama) choke on a null/absent
+      # `content` when replaying such a message on a follow-up turn (ruby_llm
+      # 1.16.0 / 7088339b). `format_content` is virtual (Crystal always dispatches
+      # instance methods on the runtime class), so this single base-class override
+      # covers every OpenAI-compatible subclass (Ollama, GPUStack, DeepSeek, xAI,
+      # ...) without each needing its own `format_message_content` wrapper — unlike
+      # upstream, where GPUStack::Chat/Ollama::Chat each duplicate this wrapper
+      # (Ruby's module-composition, not real subclassing, doesn't give them
+      # `format_content` for free).
+      private def format_message_content(msg : Message) : JSON::Any
+        content = format_content(format_content_arg(msg.content))
+        return JSON::Any.new("") if content.raw.nil? && thinking_only_assistant_message?(msg)
+
+        content
+      end
+
+      # ruby_llm 1.16.0 / 7088339b.
+      def thinking_only_assistant_message?(msg : Message) : Bool
+        msg.role.assistant? && !msg.thinking.nil? && !msg.tool_call?
       end
 
       # Re-emits an assistant message's reasoning so a multi-turn request can carry

@@ -160,6 +160,43 @@ describe CrystalLLM::Providers::OpenAI do
     end
   end
 
+  describe "#format_messages" do
+    # ruby_llm 1.16.0 / 7088339b: GPUStack/Ollama choke on a null/absent `content`
+    # when replaying a thinking-only assistant message (reasoning present, no text,
+    # no tool call) on a follow-up turn; the fix swaps in `""`. The fix itself lives
+    # once in this base class (`format_message_content`/`thinking_only_assistant_
+    # message?`) since `format_content` is a normal virtual method every
+    # OpenAI-compatible subclass overrides — see gpustack_spec.cr/ollama_spec.cr for
+    # the subclass-level mirrors of upstream's new spec files.
+    it "uses empty-string content (not null) for a thinking-only assistant message" do
+      thinking = CrystalLLM::Thinking.new(text: "I should reason first")
+      message = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: nil, thinking: thinking)
+      provider = configured_openai
+
+      formatted = provider.format_messages([message])
+
+      entry = formatted.first.as_h
+      entry["content"].as_s.should eq("")
+      entry["reasoning_content"].as_s.should eq("I should reason first")
+    end
+
+    it "does not force empty-string content for a thinking assistant message that also has a tool call" do
+      thinking = CrystalLLM::Thinking.new(text: "reasoning")
+      message = CrystalLLM::Message.new(
+        role: CrystalLLM::Role::Assistant, content: nil, thinking: thinking,
+        tool_calls: {"call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: "search")}
+      )
+      provider = configured_openai
+
+      # thinking_only_assistant_message? requires !tool_call?, so this message
+      # doesn't take the format_message_content "" branch — but Message's own
+      # content normalization (message.cr) already coerces nil -> "" for any
+      # assistant message with tool_calls, so the wire content is still "".
+      formatted = provider.format_messages([message])
+      formatted.first.as_h["content"].as_s.should eq("")
+    end
+  end
+
   describe "#parse_completion_response" do
     it "turns an OpenAI completion JSON into a Message with content + tokens" do
       body = <<-JSON
