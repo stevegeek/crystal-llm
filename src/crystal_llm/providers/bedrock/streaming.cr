@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/bedrock/streaming.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock/streaming.rb @ ruby_llm 1.16.0
 #
 # Decodes Bedrock ConverseStream's binary `application/vnd.amazon.eventstream`
 # frames into JSON::Any events and builds a Chunk per event.
@@ -20,8 +20,10 @@
 #   tool-call deltas become `""`-keyed here (the accumulator merges by buffer
 #   position — same convention as the OpenAI streaming port). The toolUse input
 #   partial-JSON fragment rides on ToolCall#raw_arguments (parsed once at the end).
-# - thinking text/signature are extracted but not attached to the Chunk (Message#thinking
-#   deferred); reasoning_tokens ARE wired.
+# - thinking text/signature ARE attached to the Chunk via `Thinking.build`
+#   (ruby_llm 1.16.0 / 14a254b4: fixed reasoningContent deltas that put `text`/
+#   `signature` directly on `reasoningContent` — not nested under `reasoningText`
+#   — being dropped); reasoning_tokens ARE wired.
 require "json"
 require "base64"
 require "digest/crc32"
@@ -156,6 +158,10 @@ module CrystalLLM
           role: Role::Assistant,
           model_id: stream_model_id(data),
           content: extract_content_delta(data),
+          thinking: Thinking.build(
+            text: extract_thinking_delta(data),
+            signature: extract_thinking_signature(data)
+          ),
           tool_calls: extract_tool_calls(data),
           input_tokens: extract_input_tokens(metadata_usage, usage, message_usage),
           output_tokens: extract_output_tokens(metadata_usage, usage),
@@ -271,13 +277,54 @@ module CrystalLLM
 
       private def extract_thinking_delta(event : JSON::Any) : String?
         delta = normalized_delta(event)
-        reasoning_text = delta.dig?("reasoningContent", "reasoningText").try(&.as_h?) || {} of String => JSON::Any
+        reasoning_content = delta["reasoningContent"]?.try(&.as_h?) || {} of String => JSON::Any
+
+        reasoning_text = reasoning_content["reasoningText"]?.try(&.as_h?) || {} of String => JSON::Any
         if text = reasoning_text["text"]?.try(&.as_s?)
           return text
         end
-
+        if text = reasoning_content["text"]?.try(&.as_s?)
+          return text
+        end
         if event.dig?("delta", "type").try(&.as_s?) == "thinking_delta"
           return event.dig?("delta", "thinking").try(&.as_s?)
+        end
+
+        nil
+      end
+
+      private def extract_thinking_signature(event : JSON::Any) : String?
+        extract_signature_from_delta(event) || extract_signature_from_start(event)
+      end
+
+      private def extract_signature_from_delta(event : JSON::Any) : String?
+        delta = normalized_delta(event)
+        reasoning_content = delta["reasoningContent"]?.try(&.as_h?) || {} of String => JSON::Any
+        reasoning_text = reasoning_content["reasoningText"]?.try(&.as_h?) || {} of String => JSON::Any
+
+        if signature = reasoning_text["signature"]?.try(&.as_s?)
+          return signature
+        end
+        if signature = reasoning_content["signature"]?.try(&.as_s?)
+          return signature
+        end
+        if event.dig?("delta", "type").try(&.as_s?) == "signature_delta"
+          return event.dig?("delta", "signature").try(&.as_s?)
+        end
+
+        nil
+      end
+
+      private def extract_signature_from_start(event : JSON::Any) : String?
+        start = event.dig?("contentBlockStart", "start", "reasoningContent").try(&.as_h?)
+        return nil unless start
+
+        reasoning_text = start["reasoningText"]?.try(&.as_h?) || {} of String => JSON::Any
+        if signature = reasoning_text["signature"]?.try(&.as_s?)
+          return signature
+        end
+        if redacted = start["redactedContent"]?.try(&.as_s?)
+          return redacted
         end
 
         nil

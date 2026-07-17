@@ -475,6 +475,54 @@ describe CrystalLLM::Providers::Bedrock do
       calls["tu_1"].name.should eq("weather")
       calls["tu_1"].arguments["city"].as_s.should eq("Paris")
     end
+
+    # ruby_llm 1.16.0 / 14a254b4 (Fixes #702): some Bedrock Converse Stream
+    # reasoningContent deltas put `text`/`signature` directly on `reasoningContent`
+    # rather than nested under `reasoningText`. Before the fix these deltas were
+    # dropped (extract_thinking_delta/extract_thinking_signature only checked
+    # reasoningText, and the port never even wired thinking into build_chunk).
+    it "extracts thinking text from a reasoningContent delta not nested under reasoningText" do
+      data = JSON.parse(<<-JSON)
+      {
+        "contentBlockDelta": {"delta": {"reasoningContent": {"text": "thinking text"}}}
+      }
+      JSON
+      provider = configured_bedrock
+      chunk = provider.build_chunk(data)
+      thinking = chunk.thinking
+      raise "no thinking" unless thinking
+      thinking.text.should eq("thinking text")
+    end
+
+    it "extracts thinking signature from a reasoningContent delta not nested under reasoningText" do
+      data = JSON.parse(<<-JSON)
+      {
+        "contentBlockDelta": {"delta": {"reasoningContent": {"signature": "thinking-signature"}}}
+      }
+      JSON
+      provider = configured_bedrock
+      chunk = provider.build_chunk(data)
+      thinking = chunk.thinking
+      raise "no thinking" unless thinking
+      thinking.signature.should eq("thinking-signature")
+    end
+
+    it "accumulates reasoningContent thinking deltas into the final message" do
+      provider = configured_bedrock
+      accumulator = CrystalLLM::StreamAccumulator.new
+
+      text_event = JSON.parse(%({"contentBlockDelta":{"delta":{"reasoningContent":{"text":"thinking text"}}}}))
+      signature_event = JSON.parse(%({"contentBlockDelta":{"delta":{"reasoningContent":{"signature":"thinking-signature"}}}}))
+
+      accumulator.add(provider.build_chunk(text_event))
+      accumulator.add(provider.build_chunk(signature_event))
+      message = accumulator.to_message(nil)
+
+      thinking = message.thinking
+      raise "no thinking" unless thinking
+      thinking.text.should eq("thinking text")
+      thinking.signature.should eq("thinking-signature")
+    end
   end
 
   describe "#parse_list_models_response" do
