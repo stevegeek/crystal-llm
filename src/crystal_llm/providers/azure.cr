@@ -336,6 +336,7 @@ module CrystalLLM
   end
 end
 
+require "./azure/media"
 require "./azure/chat"
 require "./azure/models"
 require "./azure/embeddings"

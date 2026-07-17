@@ -62,7 +62,7 @@ private def read_cassette_json(path : String) : String
 end
 
 # Pull the plain text out of a Message#content union (String | Content | Nil).
-private def text_of(content : String | CrystalLLM::Content | Nil) : String?
+private def text_of(content : String | CrystalLLM::Content | CrystalLLM::Content::Raw | Nil) : String?
   case content
   when String              then content
   when CrystalLLM::Content then content.text

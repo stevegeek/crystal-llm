@@ -196,12 +196,16 @@ module CrystalLLM
 
       # The text/Hash/Array slice of ruby_llm's Media.render_content (rich attachments
       # deferred). nil/empty -> [], a String -> one text block.
-      private def render_text_content(content : String | Content | Nil) : Array(JSON::Any)
+      private def render_text_content(content : String | Content | Content::Raw | Nil) : Array(JSON::Any)
         case content
         when Nil
           [] of JSON::Any
         when String
           content.empty? ? [] of JSON::Any : [text_block(content)]
+        when Content::Raw
+          # Raw is handled by render_message_content before this is reached; emit the
+          # raw blocks if ever called directly.
+          render_raw_content(content)
         else # Content
           blocks = [] of JSON::Any
           if t = content.text
@@ -219,7 +223,7 @@ module CrystalLLM
       # text). Mirrors ruby_llm's render_content_object attachment loop, threading the
       # payload-scoped `@used_document_names` for document-name de-dup. Non-Content
       # content carries no attachments and yields no blocks.
-      private def render_attachment_blocks(content : String | Content | Nil) : Array(JSON::Any)
+      private def render_attachment_blocks(content : String | Content | Content::Raw | Nil) : Array(JSON::Any)
         return [] of JSON::Any unless content.is_a?(Content)
 
         content.attachments.map do |attachment|
@@ -249,7 +253,7 @@ module CrystalLLM
         } of String => JSON::Any)
       end
 
-      private def render_tool_result_content(content : String | Content | Nil) : Array(JSON::Any)
+      private def render_tool_result_content(content : String | Content | Content::Raw | Nil) : Array(JSON::Any)
         case content
         when Content::Raw
           render_raw_tool_result_content(content.value)

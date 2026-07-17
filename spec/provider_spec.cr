@@ -2,6 +2,25 @@ require "./spec_helper"
 require "../src/crystal_llm/provider"
 require "../src/crystal_llm/provider_completion"
 require "../src/crystal_llm/providers/anthropic"
+require "../src/crystal_llm/providers/openai"
+require "../src/crystal_llm/providers/azure"
+require "../src/crystal_llm/providers/gemini"
+require "../src/crystal_llm/providers/mistral"
+require "../src/crystal_llm/providers/deepseek"
+require "../src/crystal_llm/providers/xai"
+require "../src/crystal_llm/providers/perplexity"
+require "../src/crystal_llm/providers/openrouter"
+require "../src/crystal_llm/providers/ollama"
+require "../src/crystal_llm/providers/vertexai"
+require "../src/crystal_llm/providers/bedrock"
+require "../src/crystal_llm/providers/gpustack"
+
+# The built-in provider slugs expected to be registered in a full test run.
+# Used by the schema-invariant meta-tests to skip spec-local dummy providers.
+REAL_PROVIDER_SLUGS = %w[
+  openai anthropic azure gemini mistral deepseek xai perplexity
+  openrouter ollama vertexai bedrock gpustack
+]
 
 private def build_response(status : Int32, body : String) : Crest::Response
   Crest::Response.new(
@@ -89,6 +108,46 @@ describe CrystalLLM::Provider do
       config.http_proxy = "set"
       provider = ProviderSpecDummy.new(config)
       provider.sign_headers("POST", "/v1/chat", "{}").should be_empty
+    end
+  end
+
+  # Meta-test: for every REAL registered provider, configuration_requirements ⊆
+  # configuration_options. Mirrors ruby_llm's provider_spec.rb "keeps requirements as
+  # a subset of declared configuration options". This catches a class where
+  # `configuration_requirements` lists a key that `configuration_options` forgot to
+  # declare (a drift bug).
+  # Spec-local dummy providers (ProviderSpecDummy etc.) are excluded: they are test
+  # scaffolding that piggybacks on the global registry and is not expected to have a
+  # fully-declared options surface.
+  describe "provider configuration schema invariant" do
+    it "configuration_requirements is always a subset of configuration_options for every real provider" do
+      REAL_PROVIDER_SLUGS.each do |name|
+        provider_class = CrystalLLM::Provider.resolve(name)
+        next unless provider_class # provider may not be registered in this run
+
+        reqs = provider_class.configuration_requirements
+        opts = provider_class.configuration_options
+        missing = reqs.reject { |req| opts.includes?(req) }
+        missing.should eq([] of String),
+          "#{name} (#{provider_class}): configuration_requirements has keys not in " \
+          "configuration_options: #{missing.inspect}"
+      end
+    end
+
+    it "every configuration_requirement is a known Configuration option" do
+      # Belt-and-suspenders: also check the requirements are real Configuration ivars
+      # (not just declared in configuration_options but forgotten to add as properties).
+      config_options = CrystalLLM::Configuration.options
+      REAL_PROVIDER_SLUGS.each do |name|
+        provider_class = CrystalLLM::Provider.resolve(name)
+        next unless provider_class
+
+        provider_class.configuration_requirements.each do |req|
+          config_options.should contain(req),
+            "#{name}: configuration_requirements includes #{req.inspect} which is not " \
+            "a property on Configuration"
+        end
+      end
     end
   end
 

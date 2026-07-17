@@ -106,3 +106,56 @@ describe "CrystalLLM::Providers::GPUStack media" do
     end
   end
 end
+
+private def gpustack_png_content : CrystalLLM::Content
+  io = IO::Memory.new
+  io.write(Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+  io.rewind
+  content = CrystalLLM::Content.new("analyze this")
+  content.attachments << CrystalLLM::Attachment.new(io, filename: "screenshot.png")
+  content
+end
+
+# Attachment media formatting (ported from gpustack/media.rb)
+describe "CrystalLLM::Providers::GPUStack::Media attachment formatting" do
+  it "emits text + image_url parts with detail:'auto'" do
+    result = CrystalLLM::Providers::GPUStack::Media.format_content(gpustack_png_content)
+    parts = result.as_a
+    parts.size.should eq(2)
+
+    parts[0].as_h["type"].as_s.should eq("text")
+    parts[0].as_h["text"].as_s.should eq("analyze this")
+
+    img = parts[1].as_h
+    img["type"].as_s.should eq("image_url")
+    image_url = img["image_url"].as_h
+    image_url["url"].as_s.should start_with("data:image/png;base64,")
+    image_url["detail"].as_s.should eq("auto")
+  end
+
+  it "passes plain text through as a bare string" do
+    CrystalLLM::Providers::GPUStack::Media.format_content("hello").as_s.should eq("hello")
+  end
+
+  it "raises UnsupportedAttachmentError for a pdf (unsupported)" do
+    io = IO::Memory.new("%PDF-1.4\n".to_slice)
+    io.rewind
+    content = CrystalLLM::Content.new("read")
+    content.attachments << CrystalLLM::Attachment.new(io, filename: "doc.pdf")
+    expect_raises(CrystalLLM::UnsupportedAttachmentError) do
+      CrystalLLM::Providers::GPUStack::Media.format_content(content)
+    end
+  end
+
+  it "format_content is called by the provider instance" do
+    config = CrystalLLM::Configuration.new
+    config.gpustack_api_base = "http://gpustack.local/v1"
+    config.gpustack_api_key = "test"
+    provider = CrystalLLM::Providers::GPUStack.new(config)
+    result = provider.format_content(gpustack_png_content)
+    parts = result.as_a
+    img = parts[1].as_h
+    img["type"].as_s.should eq("image_url")
+    img["image_url"].as_h["detail"].as_s.should eq("auto")
+  end
+end

@@ -2,6 +2,8 @@
 require "./tokens"
 require "./model/pricing_category"
 require "./model/info"
+require "./models"
+require "./error"
 
 module CrystalLLM
   # Represents the cost of token usage for a model response.
@@ -14,10 +16,12 @@ module CrystalLLM
   #   runtime symbol.
   # - `input_details` (a string/symbol-keyed Hash in ruby_llm) is taken as
   #   `Hash(String, Int32?)`; only "text_tokens"/"image_tokens" are read.
-  # - `model` is a `Model::Info?`. DEFERRED: `normalize_model`'s String/Symbol
-  #   branch (`RubyLLM.models.find`) needs the Models registry (not ported); the
-  #   `to_llm` duck-typing branch needs the ActiveRecord layer. Callers pass an
-  #   already-resolved `Model::Info` (or nil).
+  # - `model` accepts a `Model::Info` OR a `String` model id. `normalize_model`
+  #   resolves a String against the registry (`Models.find`, returning nil when
+  #   unknown — ruby_llm rescues `ModelNotFoundError`). ruby_llm's `to_llm`
+  #   duck-typed branch is the ActiveRecord layer (a crystal-llm-marten concern):
+  #   a persisted chat-model record resolves to a `Model::Info` before reaching
+  #   Cost, so core needs only the String + `Model::Info` branches.
   class Cost
     # ruby_llm's `COMPONENTS`.
     enum Component
@@ -64,14 +68,33 @@ module CrystalLLM
 
     def initialize(
       @tokens : Tokens? = nil,
-      model : Model::Info? = nil,
+      model : Model::Info | String | Nil = nil,
       @amounts : Hash(Component, Float64?)? = nil,
       @missing : Array(Component) = [] of Component,
       @has_tokens : Bool? = nil,
       @category : Category = Category::TextTokens,
       @input_details : Hash(String, Int32?)? = nil,
     )
-      @model = model
+      @model = normalize_model(model)
+    end
+
+    # Mirrors ruby_llm's `normalize_model`: a String model id is resolved against
+    # the registry (nil when unknown — ruby_llm rescues `ModelNotFoundError`); a
+    # `Model::Info` passes through. (The `to_llm` duck-typed branch is the
+    # ActiveRecord layer — out of core scope; see the class divergence note.)
+    private def normalize_model(model : Model::Info | String | Nil) : Model::Info?
+      case model
+      in String
+        begin
+          Models.find(model)
+        rescue ModelNotFoundError
+          nil
+        end
+      in Model::Info
+        model
+      in Nil
+        nil
+      end
     end
 
     def input : Float64?

@@ -58,6 +58,18 @@ module CrystalLLM
         end
     end
 
+    # Writes this attachment's bytes to *path*.
+    # Raises `ArgumentError` if the content cannot be loaded.
+    # Mirrors ruby_llm's `Attachment#save(path)`.
+    def save(path : String | ::Path) : Nil
+      bytes = content
+      raise ArgumentError.new("Cannot save attachment: content is nil or unreadable (source: #{@source.inspect})") if bytes.nil?
+
+      File.open(path.to_s, "wb") do |file|
+        file.write(bytes)
+      end
+    end
+
     def encoded : String
       Base64.strict_encode(content || Bytes.empty)
     end

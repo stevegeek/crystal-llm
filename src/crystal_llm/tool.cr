@@ -27,14 +27,27 @@ module CrystalLLM
   # `param name : Type, "desc", required: true`:
   #   1. records a `Parameter` (name / json-type / description / required) for the
   #      params-schema, AND
-  #   2. generates the runtime arg-extraction `call(args)` that pulls each declared
-  #      param out of the `Hash(String, JSON::Any)` the model supplied, coerces it
-  #      to the declared Crystal type, validates missing/unknown keys, and invokes
-  #      the subclass's typed `execute(...)`.
+  #   2. drives the AUTO-GENERATED `dispatch(args)` (built in the `inherited`
+  #      hook) that pulls each declared param out of the `Hash(String, JSON::Any)`
+  #      the model supplied, coerces it to the declared Crystal type, and invokes
+  #      the subclass's typed `execute(...)`. The author writes only `param ...`
+  #      plus a typed `def execute(typed...)`.
+  #
+  # Coercion convention (driven off the declared Crystal type):
+  #   String -> as_s, Int32/Int -> as_i, Int64 -> as_i64, Float64 -> as_f,
+  #   Bool -> as_bool, Array(T) -> as_a.map { element-coerce to T }.
+  # Ambiguous integer width resolves to Int32 (`as_i`); use `Int64` explicitly for
+  # 64-bit. A nilable (`Int32?`) or `required: false` param coerces via
+  # `args[k]?.try(...)`, yielding `nil` when the key is absent.
+  #
+  # A coercion failure (the model sent a wrongly-typed value) is reported as the
+  # `{ "error" => "Invalid tool arguments: ..." }` hash; an unrelated exception
+  # raised inside the user's `execute` body PROPAGATES untouched (ruby_llm parity).
   #
   # There is NO runtime signature inference (design §7 / §11.1) — `param` is the
   # single source of truth. A subclass with no `param` declarations is a valid,
-  # zero-argument tool (its `execute` takes no args).
+  # zero-argument tool (its `execute` takes no args). A subclass may still
+  # hand-write its own `dispatch(args)` to override the generated one.
   #
   # == Other divergences ==
   #
@@ -79,15 +92,19 @@ module CrystalLLM
 
     # Parameter definition for a tool. `type` is the JSON-schema type string
     # ("string"/"integer"/"number"/"boolean"/"array"/"object"); `required`
-    # controls whether the key must be present in the call args.
+    # controls whether the key must be present in the call args. For an `array`
+    # parameter, `items_type` is the JSON-schema type of the element (derived
+    # from `Array(T)`; defaults to "string").
     class Parameter
       getter name : String
       getter type : String
       getter description : String?
       getter? required : Bool
+      getter items_type : String?
 
       def initialize(@name : String, @type : String = "string",
-                     @description : String? = nil, @required : Bool = true)
+                     @description : String? = nil, @required : Bool = true,
+                     @items_type : String? = nil)
       end
     end
 
@@ -113,6 +130,12 @@ module CrystalLLM
         {"type" => JSON::Any.new("string")}
       end
 
+      # The `items` schema for an array parameter, using the declared element
+      # type when known (e.g. `Array(Int32)` -> `{type: integer}`).
+      def self.items_schema(items_type : String?) : Hash(String, JSON::Any)
+        {"type" => JSON::Any.new(map_type(items_type || "string"))}
+      end
+
       # Build a params-schema from declared `Parameter`s (the param-derived path).
       # Returns `nil` when there are no parameters and `allow_empty` is false.
       def self.from_parameters(parameters : Array(Parameter),
@@ -126,7 +149,7 @@ module CrystalLLM
           if d = param.description
             schema["description"] = JSON::Any.new(d)
           end
-          schema["items"] = JSON::Any.new(default_items_schema) if schema["type"].as_s == "array"
+          schema["items"] = JSON::Any.new(items_schema(param.items_type)) if schema["type"].as_s == "array"
           properties[param.name] = JSON::Any.new(schema)
           required << JSON::Any.new(param.name) if param.required?
         end
@@ -186,6 +209,77 @@ module CrystalLLM
       @@parameters = [] of CrystalLLM::Tool::Parameter
       @@params_schema_definition = nil
       @@provider_params = nil
+
+      # Compile-time accumulator of `param` declarations for THIS subclass, used to
+      # auto-generate the `dispatch` coercion bridge below. Each entry is
+      # `{name, base_crystal_type_string, nilable?, required?, json_type, items_json_type?}`.
+      # A constant (not a class var) so it is readable from a macro body at codegen
+      # time; isolated per subclass because each `inherited` redeclares it.
+      PARAM_DECLS = [] of Nil
+
+      # Auto-generated `dispatch`: coerces each declared `JSON::Any` arg to the
+      # param's declared Crystal type and calls the typed `execute`. Emitted on
+      # EVERY subclass so the typed-`execute` author writes only `param` + a typed
+      # `execute`. Backward-compat: a subclass that hand-writes its own
+      # `def dispatch(args)` defines it AFTER this hook-injected one, so the
+      # hand-written definition wins (last definition in the subclass body). A
+      # subclass with no `param` decls falls through to the zero-arg `execute`.
+      #
+      # The body is escaped (`{%  %}`) so the `PARAM_DECLS` walk defers to method-
+      # resolution time — by then the subclass body is fully parsed and every
+      # `param` has been recorded (see the macros-hooks reference: `instance_vars`
+      # / accumulators can only be read from a lazily-expanded method body, never
+      # from the hook's own scope).
+      def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
+        \{% if @type.constant("PARAM_DECLS") && !@type.constant("PARAM_DECLS").empty? %}
+          # Phase 1 — COERCION. Pull each declared arg out of the JSON hash and
+          # cast it to the declared Crystal type, into a fresh per-param local. A
+          # cast/lookup failure here is an *argument* error (the model supplied a
+          # wrongly-typed value) and is reported as the `{ "error" => ... }` hash,
+          # NOT propagated — mirroring ruby_llm's "Invalid tool arguments" result.
+          # `execute` is called only AFTER coercion succeeds (phase 2), so any
+          # error raised by the user's tool body propagates untouched.
+          \{% for d, i in @type.constant("PARAM_DECLS") %}
+            \{% name = d[0] %}
+            \{% base = d[1] %}
+            \{% optional = d[2] || !d[3] %}
+            \{% array = base.starts_with?("Array(") %}
+            \{% inner = array ? base[6..-2] : "" %}
+            \{% scalar_cast = base == "Int64" ? "as_i64" : (base.starts_with?("Int") ? "as_i" : (base.starts_with?("Float") ? "as_f" : (base == "Bool" ? "as_bool" : "as_s"))) %}
+            \{% element_cast = inner == "Int64" ? "as_i64" : (inner.starts_with?("Int") ? "as_i" : (inner.starts_with?("Float") ? "as_f" : (inner == "Bool" ? "as_bool" : "as_s"))) %}
+            \{% local = ("__cllm_arg_" + i.stringify).id %}
+            begin
+              \{% if optional %}
+                \{{ local }} = args[\{{ name }}]?.try { |v|
+                  \{% if array %}
+                    v.as_a.map { |e| e.\{{ element_cast.id }} }
+                  \{% else %}
+                    v.\{{ scalar_cast.id }}
+                  \{% end %}
+                }
+              \{% else %}
+                \{{ local }} =
+                  \{% if array %}
+                    args[\{{ name }}].as_a.map { |e| e.\{{ element_cast.id }} }
+                  \{% else %}
+                    args[\{{ name }}].\{{ scalar_cast.id }}
+                  \{% end %}
+              \{% end %}
+            rescue ex : TypeCastError | KeyError | JSON::ParseException
+              return {"error" => JSON::Any.new("Invalid tool arguments: \{{ name.id }}: \\#{ex.message}")} of String => JSON::Any
+            end
+          \{% end %}
+
+          # Phase 2 — DISPATCH. Outside the rescue: user-body errors propagate.
+          execute(
+            \{% for d, i in @type.constant("PARAM_DECLS") %}
+              \{{ d[0].id }}: \{{ ("__cllm_arg_" + i.stringify).id }},
+            \{% end %}
+          )
+        \{% else %}
+          execute
+        \{% end %}
+      end
     end
 
     # Set (no arg: read) the tool description. `desc` is a shorter alias.
@@ -243,16 +337,40 @@ module CrystalLLM
     macro param(decl, description = nil, required = true, type = nil)
       {% var = decl.var %}
       {% crystal_type = decl.type %}
-      {% type_str = crystal_type.stringify %}
+      # Strip a nilable union (`Int32?` => `Int32 | ::Nil`, or `T | Nil`) down to
+      # the single non-Nil member; record whether the declaration was nilable.
+      {% if crystal_type.is_a?(Union) %}
+        {% members = crystal_type.types.reject { |mem| mem.stringify == "Nil" || mem.stringify == "::Nil" } %}
+        {% nilable = crystal_type.types.any? { |mem| mem.stringify == "Nil" || mem.stringify == "::Nil" } %}
+        {% base_type = members.first %}
+      {% else %}
+        {% nilable = false %}
+        {% base_type = crystal_type %}
+      {% end %}
+      {% base_str = base_type.stringify %}
+      # The JSON-schema element type for an `Array(T)` param (drives `items`).
+      {% items_type = nil %}
+      {% if base_str.starts_with?("Array(") %}
+        {% inner = base_str[6..-2] %}
+        {% items_type = if inner.starts_with?("Int")
+                          "integer"
+                        elsif inner.starts_with?("Float")
+                          "number"
+                        elsif inner == "Bool"
+                          "boolean"
+                        else
+                          "string"
+                        end %}
+      {% end %}
       {% json_type = if type
                        type
-                     elsif type_str.starts_with?("Int")
+                     elsif base_str.starts_with?("Int")
                        "integer"
-                     elsif type_str.starts_with?("Float")
+                     elsif base_str.starts_with?("Float")
                        "number"
-                     elsif type_str == "Bool"
+                     elsif base_str == "Bool"
                        "boolean"
-                     elsif type_str.starts_with?("Array")
+                     elsif base_str.starts_with?("Array")
                        "array"
                      else
                        "string"
@@ -261,8 +379,12 @@ module CrystalLLM
         {{ var.stringify }},
         type: {{ json_type }},
         description: {{ description }},
-        required: {{ required }}
+        required: {{ required }},
+        items_type: {{ items_type }}
       )
+      # Accumulate the coercion metadata for the auto-generated `dispatch`:
+      # `{name, base-Crystal-type, nilable?, required?}`.
+      {% PARAM_DECLS << {var.stringify, base_str, nilable, required} %}
     end
 
     # --- Instance side --------------------------------------------------------
@@ -308,25 +430,25 @@ module CrystalLLM
       dispatch(args)
     end
 
-    # Subclasses override `dispatch` (generated by hand in the typed `execute`
-    # pattern below) to extract args and call their typed `execute`. The default
-    # no-param dispatch ignores args and calls the zero-arg `execute`.
+    # `dispatch` bridges the runtime `Hash(String, JSON::Any)` args to the typed
+    # `execute`. It is now AUTO-GENERATED per subclass from the `param` decls (see
+    # the `inherited` hook): each declared `JSON::Any` arg is coerced to the
+    # param's declared Crystal type and passed to `execute(...)`. A tool author
+    # therefore writes only `param ...` + a typed `def execute(typed...)` — the
+    # ruby_llm signature-inference, resolved at compile time.
     #
-    # NOTE: because Crystal can't splat a runtime hash, a tool with params writes:
-    #
-    #   def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
-    #     execute(latitude: args["latitude"].as_f, city: args["city"]?.try(&.as_s))
-    #   end
-    #
-    # The `param` macro records the schema; `dispatch` wires extraction. (A future
-    # iteration may auto-generate `dispatch` from the `param` decls; kept explicit
-    # for now so the type coercion stays visible and correct — design §7.)
+    # The base definition here is the fallback for the zero-`param` case (and the
+    # method the generated/hand-written subclass `dispatch` overrides). A subclass
+    # may STILL hand-write its own `def dispatch(args : Hash(String, JSON::Any))`
+    # (e.g. to do custom extraction); because that definition appears after the
+    # `inherited`-injected one in the subclass body, it wins — preserving every
+    # pre-existing hand-written tool unchanged.
     def dispatch(args : Hash(String, JSON::Any)) : ToolResult
       execute
     end
 
-    # The zero-arg default. Tools with params override `execute` with a typed
-    # signature (and override `dispatch` to feed it).
+    # The zero-arg default. Tools with params supply a typed `execute` (the
+    # generated `dispatch` coerces args and calls it).
     def execute : ToolResult
       raise NotImplementedError.new("Subclasses must implement #execute")
     end

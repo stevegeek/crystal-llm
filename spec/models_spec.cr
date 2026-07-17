@@ -208,10 +208,29 @@ module CrystalLLM
 
     describe ".refresh!" do
       # Loads the small models.dev fixture instead of hitting the network.
+      # Stubs existing_models_hook to return [] so refresh! starts from scratch
+      # (no configured providers + empty existing → merged result == fixture models).
       fixture = File.read(File.join(__DIR__, "fixtures", "models_dev.json"))
+
+      # CRITICAL (offline safety): `refresh!` calls `fetch_provider_models`, which
+      # invokes `list_models` (REAL HTTP) on every registered + CONFIGURED provider.
+      # In the full suite other specs register the real OpenAI provider and
+      # always-configured fakes, so without this the suite would make live API
+      # calls. Clear the registry around each test so the provider-fetch half is a
+      # no-op and these tests stay fully offline; restore it afterward.
+      saved_providers = Provider.providers.dup
+      before_each do
+        saved_providers = Provider.providers.dup
+        Provider.providers.clear
+      end
+      after_each do
+        Provider.providers.clear
+        saved_providers.each { |slug, klass| Provider.register(slug, klass) }
+      end
 
       it "replaces the registry with models parsed from the (stubbed) fetch" do
         Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
         Models.refresh!
 
         # A model only present in the fixture is now findable.
@@ -227,6 +246,7 @@ module CrystalLLM
 
       it "maps models.dev provider keys to slugs and skips unmapped providers" do
         Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
         Models.refresh!
 
         Models.find("claude-test").provider.should eq("anthropic")
@@ -239,6 +259,7 @@ module CrystalLLM
 
       it "derives capabilities and pricing from models.dev fields" do
         Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
         Models.refresh!
 
         model = Models.find("gpt-test-mini", "openai")
@@ -255,6 +276,7 @@ module CrystalLLM
 
       it "normalizes embedding model modalities to output ['embeddings']" do
         Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
         Models.refresh!
 
         embed = Models.find("text-embedding-test", "openai")
@@ -278,6 +300,7 @@ module CrystalLLM
       # else nil (mirrors ruby_llm's `[release_date, last_updated].find(present?)`).
       it "derives created_at with release_date > last_updated > nil precedence" do
         Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
         Models.refresh!
 
         # gpt-test-mini has BOTH release_date (2025-01-15) and last_updated
@@ -337,6 +360,116 @@ module CrystalLLM
         end
       ensure
         Models.reset!
+      end
+    end
+
+    # Task 3a: Bedrock region-prefix resolution in Models.find
+    describe "Bedrock region-prefix resolution in .find" do
+      it "prefers the region-prefixed id when bedrock_region is set and a prefixed model exists" do
+        meta_profile = {"inference_types" => JSON::Any.new([JSON::Any.new("INFERENCE_PROFILE")])}
+        unprefixed = Model::Info.build(
+          id: "anthropic.claude-3-5-sonnet-20241022-v2:0", provider: "bedrock",
+          name: "unprefixed", metadata: meta_profile
+        )
+        prefixed = Model::Info.build(
+          id: "us.anthropic.claude-3-5-sonnet-20241022-v2:0", provider: "bedrock",
+          name: "prefixed", metadata: meta_profile
+        )
+
+        registry = Models.new([unprefixed, prefixed])
+        CrystalLLM.config.bedrock_region = "us-east-1"
+
+        begin
+          result = registry.find("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock")
+          result.id.should eq("us.anthropic.claude-3-5-sonnet-20241022-v2:0")
+        ensure
+          CrystalLLM.config.bedrock_region = nil
+        end
+      end
+
+      it "falls back to the unprefixed id when no bedrock_region is configured" do
+        meta = {"inference_types" => JSON::Any.new([JSON::Any.new("ON_DEMAND")])}
+        unprefixed = Model::Info.build(
+          id: "anthropic.claude-3-5-sonnet-20241022-v2:0", provider: "bedrock",
+          name: "unprefixed", metadata: meta
+        )
+        prefixed = Model::Info.build(
+          id: "us.anthropic.claude-3-5-sonnet-20241022-v2:0", provider: "bedrock",
+          name: "prefixed",
+          metadata: {"inference_types" => JSON::Any.new([JSON::Any.new("INFERENCE_PROFILE")])}
+        )
+
+        registry = Models.new([unprefixed, prefixed])
+        CrystalLLM.config.bedrock_region = nil
+
+        result = registry.find("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock")
+        result.id.should eq("anthropic.claude-3-5-sonnet-20241022-v2:0")
+      end
+
+      it "falls back to the unprefixed id when no prefixed model exists in the registry" do
+        meta = {"inference_types" => JSON::Any.new([JSON::Any.new("ON_DEMAND"), JSON::Any.new("INFERENCE_PROFILE")])}
+        unprefixed = Model::Info.build(
+          id: "anthropic.claude-3-5-sonnet-20241022-v2:0", provider: "bedrock",
+          name: "unprefixed", metadata: meta
+        )
+        registry = Models.new([unprefixed])
+        CrystalLLM.config.bedrock_region = "eu-west-1"
+
+        begin
+          result = registry.find("anthropic.claude-3-5-sonnet-20241022-v2:0", "bedrock")
+          result.id.should eq("anthropic.claude-3-5-sonnet-20241022-v2:0")
+        ensure
+          CrystalLLM.config.bedrock_region = nil
+        end
+      end
+
+      it "does not apply region prefix for ON_DEMAND-only models (no INFERENCE_PROFILE candidate)" do
+        meta = {"inference_types" => JSON::Any.new([JSON::Any.new("ON_DEMAND")])}
+        model = Model::Info.build(
+          id: "anthropic.claude-small-test-v1:0", provider: "bedrock",
+          name: "on-demand", metadata: meta
+        )
+        registry = Models.new([model])
+        CrystalLLM.config.bedrock_region = "us-east-1"
+
+        begin
+          result = registry.find("anthropic.claude-small-test-v1:0", "bedrock")
+          result.id.should eq("anthropic.claude-small-test-v1:0")
+        ensure
+          CrystalLLM.config.bedrock_region = nil
+        end
+      end
+    end
+
+    # Task 3b: load_from_database! with registerable db_source
+    describe "#load_from_database!" do
+      after_each { Models.reset! }
+
+      it "raises NotImplementedError when db_source is not configured" do
+        expect_raises(NotImplementedError, /Models.db_source is not configured/) do
+          Models.instance.load_from_database!
+        end
+      end
+
+      it "replaces the registry with rows from the configured db_source" do
+        stub_model_a = Model::Info.build(id: "db-model-a", provider: "openai", name: "DB Model A")
+        stub_model_b = Model::Info.build(id: "db-model-b", provider: "anthropic", name: "DB Model B")
+
+        Models.db_source = -> { [stub_model_a, stub_model_b] of Model::Info }
+        Models.instance.load_from_database!
+
+        Models.all.map(&.id).should contain("db-model-a")
+        Models.all.map(&.id).should contain("db-model-b")
+        Models.all.size.should eq(2)
+      end
+
+      it "reset! clears the db_source hook" do
+        Models.db_source = -> { [] of Model::Info }
+        Models.reset!
+        # After reset!, db_source is nil so NotImplementedError fires again.
+        expect_raises(NotImplementedError) do
+          Models.instance.load_from_database!
+        end
       end
     end
 

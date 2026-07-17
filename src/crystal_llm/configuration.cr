@@ -78,5 +78,32 @@ module CrystalLLM
     def configured?(key : String) : Bool
       !self[key]?.nil?
     end
+
+    # Secure inspect: redacts any property whose name contains "key", "secret", or
+    # "token" (ruby_llm mirrors this by filtering `_key`/`_secret`/`_token` ivars
+    # from `instance_variables`). Generated over the full post-reopen ivar set via
+    # `@type.instance_vars` so provider-added api-key properties are automatically
+    # covered without manual maintenance.
+    def inspect(io : IO) : Nil
+      io << "#<" << {{@type.name}} << " "
+      {% begin %}
+        first = true
+        {% for ivar in @type.instance_vars %}
+          name = {{ ivar.name.stringify }}
+          if first
+            first = false
+          else
+            io << ", "
+          end
+          io << name << "="
+          if name.includes?("key") || name.includes?("secret") || name.includes?("token")
+            io << (@{{ ivar.name }}.nil? ? "nil" : "[REDACTED]")
+          else
+            @{{ ivar.name }}.inspect(io)
+          end
+        {% end %}
+      {% end %}
+      io << ">"
+    end
   end
 end

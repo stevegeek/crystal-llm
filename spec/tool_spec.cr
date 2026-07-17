@@ -82,6 +82,75 @@ module ToolSpecHelpers
       halt("stop here")
     end
   end
+
+  # --- Auto-generated dispatch (Task 1) -------------------------------------
+
+  # Each scalar type coerced by the GENERATED dispatch (no hand-written one).
+  class ScalarsTool < CrystalLLM::Tool
+    param s : String, "a string", required: true  # ameba:disable Lint/UselessAssign
+    param i : Int32, "an int32", required: true   # ameba:disable Lint/UselessAssign
+    param big : Int64, "an int64", required: true # ameba:disable Lint/UselessAssign
+    param f : Float64, "a float", required: true  # ameba:disable Lint/UselessAssign
+    param b : Bool, "a bool", required: true      # ameba:disable Lint/UselessAssign
+
+    def execute(s : String, i : Int32, big : Int64, f : Float64, b : Bool) : CrystalLLM::ToolResult
+      "s=#{s} i=#{i} big=#{big} f=#{f} b=#{b}"
+    end
+  end
+
+  # Optional param absent -> nil (nilable type, no hand-written dispatch).
+  class OptionalParamTool < CrystalLLM::Tool
+    param name : String, "name", required: true         # ameba:disable Lint/UselessAssign
+    param age : Int32?, "optional age", required: false # ameba:disable Lint/UselessAssign
+
+    def execute(name : String, age : Int32?) : CrystalLLM::ToolResult
+      "#{name}/#{age.inspect}"
+    end
+  end
+
+  # Array param coerced element-by-element by the generated dispatch.
+  class ArrayParamTool < CrystalLLM::Tool
+    param tags : Array(String), "string tags", required: true # ameba:disable Lint/UselessAssign
+    param nums : Array(Int32), "int nums", required: false    # ameba:disable Lint/UselessAssign
+
+    def execute(tags : Array(String), nums : Array(Int32)?) : CrystalLLM::ToolResult
+      "tags=#{tags.join(",")} nums=#{nums.inspect}"
+    end
+  end
+
+  # A tool that hand-writes its own dispatch — must override the generated one.
+  class HandwrittenDispatchTool < CrystalLLM::Tool
+    param x : Int32, "x", required: true # ameba:disable Lint/UselessAssign
+
+    def execute(x : Int32) : CrystalLLM::ToolResult
+      "typed x=#{x}"
+    end
+
+    def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
+      "handwritten override (#{args["x"].as_i * 10})"
+    end
+  end
+
+  # An unrelated error raised inside execute must PROPAGATE (Task 2), not be
+  # swallowed as an invalid-arguments error hash.
+  class RaisingTool < CrystalLLM::Tool
+    param q : String, "q", required: true # ameba:disable Lint/UselessAssign
+
+    def execute(q : String) : CrystalLLM::ToolResult
+      raise ArgumentError.new("bad value provided: #{q}")
+    end
+  end
+
+  # Tool-level provider params (`with_params`) attached to the tool's wire
+  # definition (Task 3).
+  class WithParamsTool < CrystalLLM::Tool
+    description "Has provider-specific params"
+    with_params({"cache_control" => JSON::Any.new({"type" => JSON::Any.new("ephemeral")})})
+
+    def execute : CrystalLLM::ToolResult
+      "ok"
+    end
+  end
 end
 
 describe CrystalLLM::Tool do
@@ -153,6 +222,16 @@ describe CrystalLLM::Tool do
       )
     end
 
+    it "emits array items with the declared element type (Task 3)" do
+      props = ToolSpecHelpers::ArrayParamTool.new.params_schema["properties"].as_h
+      tags = props["tags"].as_h
+      tags["type"].should eq(JSON::Any.new("array"))
+      tags["items"].as_h["type"].should eq(JSON::Any.new("string"))
+      nums = props["nums"].as_h
+      nums["type"].should eq(JSON::Any.new("array"))
+      nums["items"].as_h["type"].should eq(JSON::Any.new("integer"))
+    end
+
     it "uses an empty object schema for tools without parameters" do
       ToolSpecHelpers::SampleTool.new.params_schema.should eq(
         {
@@ -196,6 +275,79 @@ describe CrystalLLM::Tool do
       result = ToolSpecHelpers::SampleTool.new.call({"unexpected" => JSON::Any.new(true)})
       result.should eq(
         {"error" => JSON::Any.new("Invalid tool arguments: unknown keyword: unexpected")}
+      )
+    end
+  end
+
+  describe "auto-generated dispatch (Task 1)" do
+    it "coerces each scalar type and calls the typed execute" do
+      result = ToolSpecHelpers::ScalarsTool.new.call({
+        "s"   => JSON::Any.new("hi"),
+        "i"   => JSON::Any.new(7_i64),
+        "big" => JSON::Any.new(9_000_000_000_i64),
+        "f"   => JSON::Any.new(2.5),
+        "b"   => JSON::Any.new(true),
+      })
+      result.should eq("s=hi i=7 big=9000000000 f=2.5 b=true")
+    end
+
+    it "passes nil for an optional param that is absent" do
+      ToolSpecHelpers::OptionalParamTool.new.call({
+        "name" => JSON::Any.new("al"),
+      }).should eq("al/nil")
+    end
+
+    it "coerces an optional param when present" do
+      ToolSpecHelpers::OptionalParamTool.new.call({
+        "name" => JSON::Any.new("al"),
+        "age"  => JSON::Any.new(40_i64),
+      }).should eq("al/40")
+    end
+
+    it "coerces an Array(T) param element-by-element" do
+      ToolSpecHelpers::ArrayParamTool.new.call({
+        "tags" => JSON::Any.new([JSON::Any.new("x"), JSON::Any.new("y")]),
+        "nums" => JSON::Any.new([JSON::Any.new(1_i64), JSON::Any.new(2_i64)]),
+      }).should eq("tags=x,y nums=[1, 2]")
+    end
+
+    it "passes nil for an absent optional Array param" do
+      ToolSpecHelpers::ArrayParamTool.new.call({
+        "tags" => JSON::Any.new([JSON::Any.new("only")]),
+      }).should eq("tags=only nums=nil")
+    end
+
+    it "lets a hand-written dispatch override the generated one" do
+      ToolSpecHelpers::HandwrittenDispatchTool.new.call({
+        "x" => JSON::Any.new(4_i64),
+      }).should eq("handwritten override (40)")
+    end
+
+    it "reports a coercion failure (wrong JSON type) as an error hash" do
+      result = ToolSpecHelpers::ScalarsTool.new.call({
+        "s"   => JSON::Any.new("hi"),
+        "i"   => JSON::Any.new("not-a-number"), # wrong type -> coercion fails
+        "big" => JSON::Any.new(1_i64),
+        "f"   => JSON::Any.new(1.0),
+        "b"   => JSON::Any.new(true),
+      })
+      result.should be_a(Hash(String, JSON::Any))
+      result.as(Hash(String, JSON::Any))["error"].as_s.should match(/Invalid tool arguments: i:/)
+    end
+  end
+
+  describe "error propagation (Task 2)" do
+    it "re-raises an unrelated error raised inside execute" do
+      expect_raises(ArgumentError, "bad value provided: hello") do
+        ToolSpecHelpers::RaisingTool.new.call({"q" => JSON::Any.new("hello")})
+      end
+    end
+  end
+
+  describe "tool-level with_params (Task 3)" do
+    it "exposes provider_params attached to the tool" do
+      ToolSpecHelpers::WithParamsTool.new.provider_params.should eq(
+        {"cache_control" => JSON::Any.new({"type" => JSON::Any.new("ephemeral")})}
       )
     end
   end

@@ -35,10 +35,54 @@ module CrystalLLM
       new(config.dup)
     end
 
-    # DEFERRED — per-call entrypoints. ruby_llm's Context exposes `chat`, `embed`,
-    # `paint`, and `connection_for`, each forwarding to a not-yet-ported class
-    # (Chat / Embedding / Image / Provider). These are omitted until those
-    # dependencies land; the config-copy behaviour above is the portable core.
-    # Tracked in `deferrals`.
+    # ---- Per-call entrypoints (mirror ruby_llm's Context#chat/embed/paint/…) ----
+    #
+    # Each forwards to the matching top-level operation with `context: self`, so the
+    # operation resolves its config from this Context's (independent) copy. ruby_llm
+    # forwards `*args, **kwargs`; the port spells out the same explicit parameters
+    # the operations already accept. The referenced classes live across the shard;
+    # Crystal resolves them at full-program build, so no extra `require` is needed.
+
+    def chat(model : String? = nil, provider : String? = nil,
+             assume_model_exists : Bool = false) : Chat
+      Chat.new(model: model, provider: provider,
+        assume_model_exists: assume_model_exists, context: self)
+    end
+
+    def embed(text : Provider::TextInput, model : String? = nil,
+              provider : String? = nil, assume_model_exists : Bool = false,
+              dimensions : Int32? = nil) : Embedding
+      Embedding.embed(text, model: model, provider: provider,
+        assume_model_exists: assume_model_exists, context: self, dimensions: dimensions)
+    end
+
+    def paint(prompt : String, model : String? = nil, provider : String? = nil,
+              assume_model_exists : Bool = false, size : String = "1024x1024",
+              with attachments : Attachable? = nil, mask : Source? = nil,
+              params : Hash(String, JSON::Any) = {} of String => JSON::Any) : Image
+      Image.paint(prompt, model: model, provider: provider,
+        assume_model_exists: assume_model_exists, size: size, context: self,
+        with: attachments, mask: mask, params: params)
+    end
+
+    def moderate(input : Provider::TextInput, model : String? = nil,
+                 provider : String? = nil, assume_model_exists : Bool = false) : Moderation
+      Moderation.moderate(input, model: model, provider: provider,
+        assume_model_exists: assume_model_exists, context: self)
+    end
+
+    def transcribe(audio_file : String, model : String? = nil, language : String? = nil,
+                   provider : String? = nil, assume_model_exists : Bool = false,
+                   opts : Hash(String, JSON::Any) = {} of String => JSON::Any) : Transcription
+      Transcription.transcribe(audio_file, model: model, language: language,
+        provider: provider, assume_model_exists: assume_model_exists,
+        context: self, opts: opts)
+    end
+
+    # Mirrors ruby_llm's `connection_for(provider_instance)` — exposes the
+    # provider's (config-bound) connection.
+    def connection_for(provider_instance : Provider) : Connection
+      provider_instance.connection
+    end
   end
 end

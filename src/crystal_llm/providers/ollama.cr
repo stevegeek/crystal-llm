@@ -91,6 +91,7 @@ module CrystalLLM
   end
 end
 
+require "./ollama/media"
 require "./ollama/models"
 require "./ollama/capabilities"
 

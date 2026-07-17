@@ -41,17 +41,13 @@
 #   form value as a file part). `build_upload_part` materializes a source into a
 #   `File` part; `multipart_form` flattens the rendered non-file fields into the
 #   crest form. The JSON `#post` path stays for non-file requests (embed/moderate/
-#   generation). Previously DEFERRED on `Connection#post` (JSON-String body only).
+#   generation).
 #
-# == DEFERRED (returned) ==
-#
-# * `transcribe`'s `speaker_references` encoding still depends on the not-yet-ported
-#   `Attachment#for_llm` data-URL surface and raises a clear "deferred" error.
-# * `instrument(...)` wrapping in the paint/moderate/transcribe class methods is
-#   DEFERRED (no Ruby parity event for those). `embed` DOES emit an
-#   `embedding.crystal_llm` event (a deferred-divergence IMPL added for parity with
-#   `chat.crystal_llm` — ruby_llm itself has no embed instrumentation; see the
-#   `#embed` pipeline below).
+# `instrument(...)` wrapping in the paint/moderate/transcribe class methods is not
+# added — ruby_llm has no instrumentation event for those operations either, so
+# omitting it is parity, not a gap. (`embed` DOES emit an `embedding.crystal_llm`
+# event — a divergence ADDED for parity with `chat.crystal_llm`; ruby_llm itself
+# has no embed instrumentation; see the `#embed` pipeline below.)
 require "json"
 require "crest"
 require "./provider"

@@ -1,6 +1,7 @@
 # ported from lib/ruby_llm/connection.rb @ ruby_llm 1.15.0
 require "crest"
 require "json"
+require "uri"
 require "./error"
 require "./error_middleware"
 
@@ -11,6 +12,21 @@ module CrystalLLM
   class Connection
     getter config : Configuration
 
+    # Test safeguard: when `CRYSTAL_LLM_BLOCK_EXTERNAL_NETWORK` is set (the spec
+    # suites set it in their spec_helper), any HTTP request to a NON-local host
+    # raises instead of going out — so a test can never silently reach a real
+    # provider API (e.g. api.openai.com). Localhost (the connection specs' in-process
+    # test servers) is always allowed. A no-op in production (env unset). Every real
+    # request method below funnels through this first.
+    def self.guard_external_network!(url : String) : Nil
+      return unless ENV["CRYSTAL_LLM_BLOCK_EXTERNAL_NETWORK"]?
+      host = URI.parse(url).host
+      return if host.nil? || host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "0.0.0.0"
+      raise "Blocked external network request to #{url} " \
+            "(CRYSTAL_LLM_BLOCK_EXTERNAL_NETWORK is set). A test attempted a real " \
+            "provider call — stub the connection (StubConnection) or a fake provider instead."
+    end
+
     RETRYABLE_STATUSES = {429, 500, 502, 503, 504, 529}
 
     def initialize(@provider : Provider, @config : Configuration)
@@ -20,6 +36,7 @@ module CrystalLLM
     # A bare connection for simple GETs (e.g. fetching attachment URLs), with no
     # provider headers — ruby_llm's `Connection.basic`.
     def self.basic_get(url : String) : Crest::Response
+      guard_external_network!(url)
       Crest.get(url)
     end
 
@@ -54,6 +71,7 @@ module CrystalLLM
 
     # Streaming POST: yields the crest response so the caller can read body_io.
     def post_stream(url : String, payload : String, headers : Hash(String, String) = {} of String => String, &block : Crest::Response ->) : Nil
+      Connection.guard_external_network!(full_url(url))
       hdrs = merge_headers(headers)
       begin
         Crest.post(full_url(url), payload, headers: hdrs, json: false, read_timeout: @config.request_timeout.seconds) do |response|
@@ -67,6 +85,7 @@ module CrystalLLM
     end
 
     private def request(method : Symbol, url : String, payload : String?, headers : Hash(String, String)) : Crest::Response
+      Connection.guard_external_network!(url)
       hdrs = merge_headers(headers)
       begin
         case method
@@ -83,6 +102,7 @@ module CrystalLLM
     private def multipart_request(url : String,
                                   form : Hash(String, Crest::ParamsValue),
                                   headers : Hash(String, String)) : Crest::Response
+      Connection.guard_external_network!(url)
       hdrs = merge_headers(headers)
       begin
         # `multipart: true` forces a multipart body even if no value is an IO

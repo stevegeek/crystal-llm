@@ -202,11 +202,12 @@ module CrystalLLM
 
     # JSON-wraps a Message's content (String text or nil) for `format_messages`.
     # Rich Content (attachments) formatting is provider-specific (OpenAI overrides).
-    private def content_to_json(content : String | Content | Nil) : JSON::Any
+    private def content_to_json(content : String | Content | Content::Raw | Nil) : JSON::Any
       case content
-      when String then JSON::Any.new(content)
-      when Nil    then JSON::Any.new(nil)
-      else             JSON::Any.new(content.to_s)
+      when String       then JSON::Any.new(content)
+      when Content::Raw then content.value # provider-native blocks pass through
+      when Nil          then JSON::Any.new(nil)
+      else                   JSON::Any.new(content.to_s)
       end
     end
   end

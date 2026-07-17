@@ -46,19 +46,45 @@
 # `resolve_tools(ctx)`) on the subclass; the default implementations read the
 # static class vars. This keeps the block body fully typed against `Context`.
 #
-# == DEFERRED (returned) ==
+# == Prompt templates: ECR instead of runtime ERB ==
 #
-# * **ERB / prompt files.** ruby_llm's `instructions` default (`{ prompt:
-#   'instructions', locals: {} }`), `render_prompt`, `prompt_path_for`, ERB
-#   rendering, and `ctx.prompt(name, **locals)` resolving a `*.txt.erb` file are
-#   DEFERRED. `ctx.prompt` exists but takes a literal string and returns it
-#   unchanged (a passthrough), so the ctx surface matches §8 without the
-#   filesystem/ERB machinery. Use plain-string / block instructions instead.
-# * **Rails/persistence hooks.** `chat_model`, `create`/`create!`, `find`,
-#   `sync_instructions!`, `with_runtime_instructions`, `to_llm`,
-#   `assume_model_exists` threading, and the `resolved_chat_model` const lookup
-#   are persistence-layer concerns owned by the `crystal-llm-marten` companion
-#   shard — DEFERRED here (design §10.7).
+# ruby_llm's prompt files are ERB templates discovered + read at RUNTIME by
+# convention (`app/prompts/<agent>/<name>.txt.erb`) and rendered with
+# `instance_exec` so the template sees the agent's inputs/`chat`/`prompt`. Crystal
+# has no runtime ERB or `instance_exec`, but **ECR** (Embedded Crystal,
+# `<%= … %>`) is the native, type-safe analog — so this is ported via ECR rather
+# than deferred:
+#
+#   prompt_template "greeting", "#{__DIR__}/prompts/greeting.ecr"  # explicit path
+#   prompt_template "instructions"                                 # path INFERRED
+#   instructions(&.prompt("instructions"))                         # renders it
+#
+# The PATH is optional: omit it and it is inferred by convention —
+# `"#{__DIR__}/prompts/<class_snake_path>/<name>.ecr"` rooted at the agent's own
+# source dir (the Crystal/ECR analog of ruby_llm's project-root
+# `app/prompts/<class>/<name>.txt.erb`; `MyApp::WorkAssistant` →
+# `prompts/my_app/work_assistant/<name>.ecr`).
+#
+# The template is embedded at COMPILE time and rendered in the Context's scope, so
+# `<%= user %>` resolves to the typed `input` getter `ctx.user` (the inputs-as-
+# locals are type-checked — stricter than ruby_llm). Divergences from ruby_llm:
+# (1) the path resolves at COMPILE time (literal or inferred-by-convention) and the
+# template ships in the binary, vs ruby_llm's runtime file discovery — a missing
+# file fails the build, not a runtime `PromptNotFoundError`; (2) arbitrary
+# `**locals` beyond the declared `input`s are not threaded (declare an `input`).
+# An undeclared `ctx.prompt(name)` still returns `name` unchanged (passthrough).
+#
+# == DEFERRED (returned) ==
+# * **Persistence hooks** (`chat_model`, `create`/`create!`, `find`,
+#   `sync_instructions!`, `with_runtime_instructions`, `to_llm`, the
+#   `resolved_chat_model` const lookup) bind an Agent subclass to a database-backed
+#   Chat record. They are owned by the `crystal-llm-marten` companion shard's
+#   `acts_as_agent` macro (which calls the static-config accessors added here:
+#   `model`/`agent_provider`/`agent_assume_model_exists`/`instructions`/
+#   `tools_list`/`temperature`/`params`/`headers`/`thinking`/`schema`/`context`).
+#   Core stays persistence-agnostic. Runtime-input *blocks* against a persisted
+#   record (ruby_llm's `instance_exec` runtime context) remain DEFERRED — the
+#   binding applies the STATIC configuration, matching the common case.
 # * **Instrumentation.** No instrumentation hooks (matches chat.cr/facade.cr).
 # * **`Enumerable` + the full `def_delegators` list.** ruby_llm mixes in
 #   `Enumerable` and delegates ~30 methods to `@chat`. This port delegates the
@@ -67,6 +93,7 @@
 #   `method_missing` macro forwarding to `@chat`, subsuming the rest without
 #   enumerating each.
 require "json"
+require "ecr"
 require "./chat"
 require "./tool"
 require "./context"
@@ -90,6 +117,12 @@ module CrystalLLM
     # stored here — they generate `resolve_*` method overrides instead (see
     # header) — so these hold only the *static* values.
     @@agent_model : String? = nil
+    # Optional provider slug + assume-model-exists flag forwarded alongside the
+    # model id (ruby_llm's `model(model_id, **options)` passes both through to
+    # `RubyLLM.chat`). Carried here so a `chat_model`-bound persisted record can be
+    # wired to a specific provider without a registry lookup.
+    @@agent_provider : String? = nil
+    @@agent_assume_model_exists : Bool = false
     @@agent_instructions : String? = nil
     @@agent_temperature : Float64? = nil
     @@agent_params : Hash(String, JSON::Any)? = nil
@@ -106,9 +139,17 @@ module CrystalLLM
     # `instructions`/`tools`/`schema` blocks — referenced fully-qualified to avoid
     # the name clash.
     @@agent_context : CrystalLLM::Context? = nil
+    # The static-tools list (set by the `tools T1.new, T2.new` form). Held at the
+    # class level — not only as a `resolve_tools` override — so the persistence
+    # binding (`crystal-llm-marten`'s `acts_as_agent`) can read the configured
+    # tools without an instance/ctx. Block-form tools (`tools { |ctx| ... }`)
+    # override `resolve_tools` instead and leave this nil.
+    @@agent_static_tools : Array(CrystalLLM::Tool)? = nil
 
     macro inherited
       @@agent_model = nil
+      @@agent_provider = nil
+      @@agent_assume_model_exists = false
       @@agent_instructions = nil
       @@agent_temperature = nil
       @@agent_params = nil
@@ -116,21 +157,40 @@ module CrystalLLM
       @@agent_thinking = nil
       @@agent_schema = nil
       @@agent_context = nil
+      @@agent_static_tools = nil
 
       # Per-subclass list of declared inputs: [{name, Type}, …]. Consumed by the
       # `macro finished` hook to emit the typed Context + constructor.
       AGENT_INPUTS = [] of Nil
 
+      # Per-subclass list of declared ECR prompt templates: [{name, path}, …].
+      # Consumed by `macro finished` to emit the Context's `prompt(name)` dispatch.
+      PROMPT_TEMPLATES = [] of Nil
+
       # ---- Class-level DSL ---------------------------------------------------
 
-      # Sets the chat model id (a `String`; ruby_llm also accepts `**options`
-      # forwarded to `RubyLLM.chat`, deferred here to the model id).
-      def self.model(model_id : String) : Nil
+      # Sets the chat model id. ruby_llm's `model(model_id, **options)` forwards
+      # arbitrary options to `RubyLLM.chat`; this port surfaces the two that matter
+      # for model resolution — `provider` (pin the provider slug) and
+      # `assume_model_exists` (skip the registry lookup). Both default to the
+      # registry-driven behaviour.
+      def self.model(model_id : String, provider : String? = nil,
+                     assume_model_exists : Bool = false) : Nil
         @@agent_model = model_id
+        @@agent_provider = provider
+        @@agent_assume_model_exists = assume_model_exists
       end
 
       def self.model : String?
         @@agent_model
+      end
+
+      def self.agent_provider : String?
+        @@agent_provider
+      end
+
+      def self.agent_assume_model_exists : Bool
+        @@agent_assume_model_exists
       end
 
       # Static instructions. The block form is `instructions { |ctx| ... }`
@@ -254,20 +314,49 @@ module CrystalLLM
         end
       end
 
-      # Static form of `tools`: `tools T1.new, T2.new`. Stored as a (per-subclass)
-      # instance-side override so the static + block paths share `resolve_tools`.
-      # ruby_llm accepts tool *classes* and instantiates them; Crystal cannot
-      # `.new` an arbitrary `Tool.class` (no shared zero-arg ctor contract — same
-      # divergence as `Chat#with_tool`), so callers pass instances.
+      # Static form of `tools`: `tools T1.new, T2.new`. Records the instances in the
+      # per-subclass `@@agent_static_tools` class var, which the default
+      # `resolve_tools` reads — so the static + block paths share `resolve_tools`
+      # AND the configured tools are reachable at the class level (via `tools_list`)
+      # for the persistence binding. ruby_llm accepts tool *classes* and
+      # instantiates them; Crystal cannot `.new` an arbitrary `Tool.class` (no
+      # shared zero-arg ctor contract — same divergence as `Chat#with_tool`), so
+      # callers pass instances.
       macro tools(*tool_instances)
-        def resolve_tools(ctx : Context) : Array(CrystalLLM::Tool)
-          [\{{ tool_instances.splat }}] of CrystalLLM::Tool
-        end
+        @@agent_static_tools = [\{{ tool_instances.splat }}] of CrystalLLM::Tool
+      end
+
+      # The class-level static-tools accessor. Returns the `tools T1.new, …` list,
+      # or an empty array when none were declared (or the block form was used).
+      def self.tools_list : Array(CrystalLLM::Tool)
+        @@agent_static_tools || [] of CrystalLLM::Tool
       end
 
       # `input name : Type` — record the input for the generated Context + ctor.
       macro input(decl)
         \{% AGENT_INPUTS << {decl.var, decl.type} %}
+      end
+
+      # `prompt_template "name"[, "#{__DIR__}/path.ecr"]` — declare an ECR template
+      # the Context renders via `ctx.prompt("name")`. The template is embedded at
+      # COMPILE time and rendered in the Context's scope, so the agent's typed
+      # `input`s are available as bare names — `<%= user %>` calls `ctx.user`
+      # (type-safe; arbitrary `**locals` are not threaded — declare an `input`).
+      #
+      # The PATH is OPTIONAL. Omit it and the path is INFERRED by convention, the
+      # Crystal/ECR analog of ruby_llm's `app/prompts/<class_path>/<name>.txt.erb`:
+      #
+      #     "#{__DIR__}/prompts/<class_snake_path>/<name>.ecr"
+      #
+      # rooted at the AGENT'S OWN source directory (not a project root — ECR is
+      # compile-time + source-relative) with `<class_snake_path>` the snake_case'd
+      # class name (`MyApp::WorkAssistant` → `my_app/work_assistant`). So
+      # `prompt_template "instructions"` on `WorkAssistant` reads
+      # `<agent_dir>/prompts/work_assistant/instructions.ecr`. (A missing file fails
+      # at COMPILE time — stricter than ruby_llm's runtime `PromptNotFoundError`.)
+      # Pass an explicit path to override the convention.
+      macro prompt_template(name, path = nil)
+        \{% PROMPT_TEMPLATES << {name, path} %}
       end
 
       # The built Chat. Declared per-subclass (with the getter) because the
@@ -288,7 +377,7 @@ module CrystalLLM
       end
 
       def resolve_tools(ctx : Context) : Array(CrystalLLM::Tool)
-        [] of CrystalLLM::Tool
+        self.class.tools_list
       end
 
       def resolve_headers(ctx : Context) : Hash(String, String)?
@@ -356,10 +445,34 @@ module CrystalLLM
           )
           end
 
-          # DEFERRED: ERB prompt-file rendering. Returns the name unchanged so
-          # the ctx surface matches §8 without the filesystem/ERB machinery.
+          # Renders a declared ECR prompt template by name (ruby_llm's
+          # `ctx.prompt(name)`). Each `prompt_template "name", path` declared on the
+          # agent becomes a `when` branch that `ECR.render`s the template IN THIS
+          # CONTEXT'S SCOPE — so the template's `<%= user %>` resolves to the typed
+          # `input` getter `ctx.user`. The template is compile-time-embedded (the
+          # Crystal analog of ruby_llm's runtime `*.txt.erb`). An undeclared name
+          # falls through to itself (the prior passthrough behaviour), so a literal
+          # string still works.
           def prompt(name : String) : String
-            name
+            \{% begin %}
+              # The agent's snake_case class path (`MyApp::WorkAssistant` →
+              # `my_app/work_assistant`), for convention-inferred template paths.
+              # `@type` here is the agent class (this `\{%  %}` runs at `finished`
+              # expansion in the subclass's scope), so it is the AGENT, not Context.
+              \{% snake = @type.name(generic_args: false).gsub(/::/, "/").underscore %}
+              case name
+              \{% for tmpl in PROMPT_TEMPLATES %}
+                \{% if tmpl[1] == nil %}
+                  # Inferred: "#{__DIR__}/prompts/<class_snake>/<name>.ecr" relative
+                  # to the agent's own source dir (emitted `__DIR__` resolves there).
+                  when \{{ tmpl[0] }} then ECR.render("#{__DIR__}/prompts/\{{ snake.id }}/\{{ tmpl[0].id }}.ecr")
+                \{% else %}
+                  when \{{ tmpl[0] }} then ECR.render(\{{ tmpl[1] }})
+                \{% end %}
+              \{% end %}
+              else name
+              end
+            \{% end %}
           end
         end
 
@@ -370,9 +483,14 @@ module CrystalLLM
           \{% end %}
         )
           # Build the base Chat from the static model config (mirrors
-          # `RubyLLM.chat(**chat_kwargs)`). `model` is the per-subclass class
-          # method declared in `macro inherited`.
-          @chat = CrystalLLM.chat(model: self.class.model)
+          # `RubyLLM.chat(**chat_kwargs)`). `model`/`agent_provider`/
+          # `agent_assume_model_exists` are the per-subclass class methods declared
+          # in `macro inherited`.
+          @chat = CrystalLLM.chat(
+            model: self.class.model,
+            provider: self.class.agent_provider,
+            assume_model_exists: self.class.agent_assume_model_exists,
+          )
           ctx = Context.new(
             @chat,
             \{% for pair in AGENT_INPUTS %}

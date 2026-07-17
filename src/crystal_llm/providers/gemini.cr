@@ -20,8 +20,8 @@
 #   attachments (image/audio/pdf/video) become `inline_data` parts, text-files
 #   inline as text, document/unknown raise UnsupportedAttachmentError.
 # - `build_response_content` (inline/file attachment reconstruction on the parse
-#   side) is DEFERRED: parse_completion_response still collapses parts to joined
-#   text only (see extract_text_parts).
+#   side) IS PORTED: gemini/inbound_media.cr adds build_response_content /
+#   build_inline_attachment / build_file_attachment / attachment_filename.
 # PORTED (2026-06-05): Structured-output schema translation. The recursive
 # GeminiSchema rewriter (uppercase TYPE values, propertyOrdering, nullable, anyOf
 # collapse, $ref/$defs resolution-or-strip) plus the responseJsonSchema-vs-
@@ -98,6 +98,7 @@ end
 
 require "./gemini/schema"
 require "./gemini/media"
+require "./gemini/inbound_media"
 require "./gemini/tools"
 require "./gemini/chat"
 require "./gemini/streaming"

@@ -99,6 +99,7 @@ module CrystalLLM
   end
 end
 
+require "./perplexity/media"
 require "./perplexity/capabilities"
 require "./perplexity/models"
 

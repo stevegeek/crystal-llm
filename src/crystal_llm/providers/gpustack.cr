@@ -88,6 +88,7 @@ module CrystalLLM
   end
 end
 
+require "./gpustack/media"
 require "./gpustack/chat"
 require "./gpustack/models"
 require "./gpustack/capabilities"

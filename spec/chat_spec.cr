@@ -1,5 +1,6 @@
 require "./spec_helper"
 require "../src/crystal_llm/chat"
+require "../src/crystal_llm/connection"
 
 # A fully in-process fake provider. It overrides `complete` directly (both the
 # sync and streaming overloads) so NO HTTP is performed — the canned responses
@@ -72,6 +73,39 @@ class ChatSpecFakeProviderTwo < ChatSpecFakeProvider
 end
 
 CrystalLLM::Provider.register("chat_spec_fake_two", ChatSpecFakeProviderTwo)
+
+# ---- Header-precedence (DIVERGENCE 16) harness -----------------------------
+#
+# A provider that exposes a colliding auth header, plus a Connection subclass that
+# records the result of the REAL (inherited, private) `merge_headers` WITHOUT doing
+# any HTTP. This drives a caller header through the connection's merge and proves
+# the provider/auth header wins on a key collision.
+class ChatSpecHeaderProvider < CrystalLLM::Provider
+  def self.configuration_requirements : Array(String)
+    [] of String
+  end
+
+  def api_base : String
+    "http://127.0.0.1:0"
+  end
+
+  def headers : Hash(String, String)
+    {"Authorization" => "Bearer provider-secret", "X-Provider" => "yes"}
+  end
+end
+
+class ChatSpecHeaderProbeConnection < CrystalLLM::Connection
+  # Records the merged headers (caller merged UNDER provider headers) for each call.
+  # `merge_headers` is an inherited private method — a subclass may call it with no
+  # explicit receiver, so this exercises the production precedence logic directly.
+  getter merged : Array(Hash(String, String)) = [] of Hash(String, String)
+
+  def record(headers : Hash(String, String)) : Hash(String, String)
+    result = merge_headers(headers)
+    @merged << result
+    result
+  end
+end
 
 # A trivial tool used to exercise the tool-call loop offline.
 class ChatSpecEchoTool < CrystalLLM::Tool
@@ -421,6 +455,224 @@ describe CrystalLLM::Chat do
       result.wind.should be_nil
       result.alerts.should be_empty
     end
+
+    # Code change 3: derive_typed_schema RECURSES into nested JSON::Serializable
+    # structs (a nested property AND an array-of-structs), instead of degrading a
+    # nested struct to an unconstrained `{"type":"object"}`.
+    it "derives a nested object schema for a 2-level-nested struct" do
+      chat = new_chat.with_schema(ChatSpecCity)
+
+      schema = chat.schema.as(JSON::Any).as_h["schema"].as_h
+      props = schema["properties"].as_h
+      props["name"].as_h["type"].as_s.should eq("string")
+
+      # nested struct property -> nested object schema (NOT a bare object)
+      geo = props["geo"].as_h
+      geo["type"].as_s.should eq("object")
+      geo_props = geo["properties"].as_h
+      # honors @[JSON::Field(key: "lat")] inside the nested struct
+      geo_props["lat"].as_h["type"].as_s.should eq("number")
+      geo_props["longitude"].as_h["type"].as_s.should eq("number")
+      geo["required"].as_a.map(&.as_s).should eq(["lat", "longitude"])
+
+      # array-of-structs property -> array with a nested-object `items` schema
+      landmarks = props["landmarks"].as_h
+      landmarks["type"].as_s.should eq("array")
+      items = landmarks["items"].as_h
+      items["type"].as_s.should eq("object")
+      items["properties"].as_h.has_key?("lat").should be_true
+
+      # nilable nested-or-scalar still tracks required-ness at the parent level
+      required = schema["required"].as_a.map(&.as_s)
+      required.should contain("name")
+      required.should contain("geo")
+      required.should contain("landmarks")
+      required.should_not contain("nickname")
+    end
+  end
+
+  # Code change 1: a schema-constrained ask returns PARSED data (Content::Raw),
+  # not a raw JSON String (ruby_llm parity — `response.content = JSON.parse(...)`).
+  describe "structured-output response normalization" do
+    it "replaces a valid-JSON schema response with parsed Content::Raw data" do
+      schema = {
+        "name"   => JSON::Any.new("person"),
+        "schema" => JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any),
+      } of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [assistant(%({"name":"Ada","age":36}))]
+      chat = new_chat.with_schema(schema)
+
+      response = chat.ask("who?").as(CrystalLLM::Message)
+
+      content = response.content
+      content.should be_a(CrystalLLM::Content::Raw)
+      parsed = content.as(CrystalLLM::Content::Raw).value
+      parsed["name"].as_s.should eq("Ada")
+      parsed["age"].as_i.should eq(36)
+    end
+
+    it "leaves the content a String when the schema response is not valid JSON" do
+      schema = {"schema" => JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [assistant("not json at all")]
+      chat = new_chat.with_schema(schema)
+
+      response = chat.ask("who?").as(CrystalLLM::Message)
+      response.content.should eq("not json at all")
+    end
+
+    # Code change 1 + regression #3: with a schema set AND a tool-call in the loop,
+    # the intermediate tool-call message content must NOT be JSON-parsed (the
+    # `return if response.tool_call?` guard) — only the FINAL answer is parsed.
+    it "does not parse an intermediate tool-call message when a schema is set" do
+      args = {"word" => JSON::Any.new("crystal")} of String => JSON::Any
+      schema = {"schema" => JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [
+        tool_call_message("call_1", "chat_spec_echo", args),
+        assistant(%({"answer":"done"})),
+      ]
+      chat = new_chat.with_tool(ChatSpecEchoTool.new).with_schema(schema)
+
+      response = chat.ask("use the tool").as(CrystalLLM::Message)
+
+      # user, assistant(tool_call), tool result, assistant(final JSON)
+      chat.messages.size.should eq(4)
+
+      # the assistant tool-call message kept intact content (NOT a Content::Raw)
+      tool_call_msg = chat.messages[1]
+      tool_call_msg.tool_call?.should be_true
+      tool_call_msg.content.should_not be_a(CrystalLLM::Content::Raw)
+
+      # the tool-role result message content is the intact String, never parsed
+      tool_msg = chat.messages[2]
+      tool_msg.role.should eq(CrystalLLM::Role::Tool)
+      tool_msg.content.should eq("echo: crystal")
+
+      # only the FINAL answer was parsed into structured data
+      response.content.should be_a(CrystalLLM::Content::Raw)
+      response.content.as(CrystalLLM::Content::Raw).value["answer"].as_s.should eq("done")
+    end
+  end
+
+  # Code change 2: with_schema(nil) clears a previously-set schema mid-conversation.
+  describe "#with_schema(nil)" do
+    it "clears a previously-set schema" do
+      schema = {"schema" => JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)} of String => JSON::Any
+      chat = new_chat.with_schema(schema)
+      chat.schema.should_not be_nil
+
+      chat.with_schema(nil)
+      chat.schema.should be_nil
+    end
+
+    it "stops normalizing responses once the schema is cleared" do
+      schema = {"schema" => JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)} of String => JSON::Any
+      ChatSpecFakeProvider.scripted = [assistant(%({"k":1}))]
+      chat = new_chat.with_schema(schema).with_schema(nil)
+
+      response = chat.ask("hi").as(CrystalLLM::Message)
+      # no schema -> no normalization -> content stays the raw String
+      response.content.should eq(%({"k":1}))
+    end
+  end
+
+  # Test addition #1: header precedence (DIVERGENCE 16 — provider/auth headers win
+  # over caller-supplied headers of the same name; a caller must not clobber auth).
+  describe "header precedence (DIVERGENCE 16)" do
+    it "keeps the provider header when a caller header has the same name" do
+      provider = ChatSpecHeaderProvider.new(CrystalLLM.config)
+      conn = ChatSpecHeaderProbeConnection.new(provider, CrystalLLM.config)
+
+      # The caller tries to override Authorization (and adds an unrelated header).
+      caller_headers = {
+        "Authorization" => "Bearer attacker-override",
+        "X-Caller"      => "present",
+      }
+
+      merged = conn.record(caller_headers)
+
+      # the provider's Authorization survives (NOT clobbered by the caller's value)
+      merged["Authorization"].should eq("Bearer provider-secret")
+      merged["X-Provider"].should eq("yes")
+      # an unrelated caller header is still carried through
+      merged["X-Caller"].should eq("present")
+      conn.merged.size.should eq(1)
+    end
+  end
+
+  # Test addition #2: with_tools(replace: true) clears the existing tool set.
+  describe "#with_tools(replace:)" do
+    it "replaces the existing tool set when replace: true" do
+      chat = new_chat.with_tool(ChatSpecHaltingTool.new)
+      chat.tools.keys.should contain("chat_spec_halting")
+
+      chat.with_tools(ChatSpecEchoTool.new, replace: true)
+      chat.tools.keys.should eq(["chat_spec_echo"])
+    end
+
+    it "clears all tools when replace: true with a nil tool" do
+      chat = new_chat.with_tool(ChatSpecEchoTool.new)
+      chat.tools.empty?.should be_false
+
+      chat.with_tools(nil, replace: true)
+      chat.tools.empty?.should be_true
+    end
+  end
+
+  # Test addition #4: with_model swaps the PROVIDER (not just the model id)
+  # mid-conversation. Provider B (ChatSpecFakeProviderTwo) records its own calls.
+  describe "#with_model provider swap" do
+    it "routes the next completion through the newly-resolved provider" do
+      ChatSpecFakeProviderTwo.reset!
+      ChatSpecFakeProvider.scripted = [assistant("from A")]
+      ChatSpecFakeProviderTwo.scripted = [assistant("from B")]
+
+      chat = new_chat
+      first = chat.ask("hi A").as(CrystalLLM::Message)
+      first.content.should eq("from A")
+      # provider A saw one completion, provider B none yet
+      ChatSpecFakeProvider.seen_messages.size.should eq(1)
+      ChatSpecFakeProviderTwo.seen_messages.size.should eq(0)
+
+      chat.with_model("fake-model-two", provider: "chat_spec_fake_two", assume_exists: true)
+      second = chat.ask("hi B").as(CrystalLLM::Message)
+      second.content.should eq("from B")
+
+      # the second completion went through provider B (B recorded it; A did not run again)
+      ChatSpecFakeProviderTwo.seen_messages.size.should eq(1)
+      ChatSpecFakeProvider.seen_messages.size.should eq(1)
+    ensure
+      ChatSpecFakeProviderTwo.reset!
+    end
+  end
+
+  # Test addition #5: additive callbacks (plus legacy aliases) fire in REGISTRATION
+  # order around a completion.
+  describe "additive callback ordering" do
+    it "fires before/after message callbacks in registration order" do
+      ChatSpecFakeProvider.scripted = [assistant("answer")]
+      CrystalLLM.config.deprecation_behavior = "silence"
+      order = [] of String
+
+      chat = new_chat
+        .before_message { |_m| order << "before_1" }
+        .before_message { |_m| order << "before_2" }
+        .on_new_message { |_m| order << "before_legacy" } # aliases before_message
+        .after_message { |_m| order << "after_1" }
+        .after_message { |_m| order << "after_2" }
+        .on_end_message { |_m| order << "after_legacy" } # aliases after_message
+
+      chat.ask("hi")
+
+      # the before_* group fires (in registration order) before the after_* group
+      before = order.select(&.starts_with?("before"))
+      after = order.select(&.starts_with?("after"))
+      before.should eq(["before_1", "before_2", "before_legacy"])
+      after.should eq(["after_1", "after_2", "after_legacy"])
+      # every before_* precedes every after_*
+      order.index!("before_legacy").should be < order.index!("after_1")
+    ensure
+      CrystalLLM.config.deprecation_behavior = "warn"
+    end
   end
 
   describe "legacy single-slot callbacks" do
@@ -558,5 +810,31 @@ struct ChatSpecWeather
   getter alerts : Array(String)
 
   def initialize(@location, @temperature, @raining, @wind, @alerts)
+  end
+end
+
+# 2-level-nested JSON::Serializable graph to exercise the RECURSIVE
+# `derive_typed_schema` (a nested struct property AND an array-of-structs property
+# both produce nested object schemas rather than degrading to `{"type":"object"}`).
+struct ChatSpecGeo
+  include JSON::Serializable
+
+  @[JSON::Field(key: "lat")]
+  getter latitude : Float64
+  getter longitude : Float64
+
+  def initialize(@latitude, @longitude)
+  end
+end
+
+struct ChatSpecCity
+  include JSON::Serializable
+
+  getter name : String
+  getter geo : ChatSpecGeo
+  getter landmarks : Array(ChatSpecGeo)
+  getter nickname : String?
+
+  def initialize(@name, @geo, @landmarks, @nickname)
   end
 end

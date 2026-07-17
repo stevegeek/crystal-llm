@@ -23,15 +23,18 @@ module CrystalLLM
 
         # The Anthropic content-block wire form of a message's content. Returns a
         # JSON array of blocks (or, for Content::Raw, whatever the raw value is).
-        def format_content(content : String | Content | Content::Raw | Nil) : JSON::Any
+        # Note: bare `Content` inside Providers::Anthropic resolves to the nested
+        # Anthropic::Content factory (see content.cr); use CrystalLLM::Content for
+        # the actual message content type.
+        def format_content(content : String | CrystalLLM::Content | CrystalLLM::Content::Raw | Nil) : JSON::Any
           case content
-          when Content::Raw
+          when CrystalLLM::Content::Raw
             content.value
           when Nil
             JSON::Any.new([format_text("")] of JSON::Any)
           when String
             JSON::Any.new([format_text(content)] of JSON::Any)
-          when Content
+          when CrystalLLM::Content
             format_rich_content(content)
           else
             JSON::Any.new([format_text(content.to_s)] of JSON::Any)
@@ -94,7 +97,7 @@ module CrystalLLM
           format_text(text_file.for_llm)
         end
 
-        private def format_rich_content(content : Content) : JSON::Any
+        private def format_rich_content(content : CrystalLLM::Content) : JSON::Any
           blocks = [] of JSON::Any
           if text = content.text
             blocks << format_text(text)

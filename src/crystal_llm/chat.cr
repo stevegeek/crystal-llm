@@ -266,6 +266,14 @@ module CrystalLLM
       self
     end
 
+    # Clears a previously-set schema (ruby_llm allows `with_schema(nil)` to remove the
+    # response-format constraint mid-conversation). Coexists with the typed/Schema/
+    # Hash/JSON::Any overloads.
+    def with_schema(schema : Nil) : self
+      @schema = nil
+      self
+    end
+
     def with_schema(schema : JSON::Any) : self
       # ruby_llm passes a raw schema through (it duck-types on `to_json_schema` /
       # Hash). A non-object JSON envelope (array/scalar) has no schema shape to
@@ -321,41 +329,52 @@ module CrystalLLM
           "ask_as(#{T}) expected a Message response, got #{response.class}"
         )
       end
+      # `normalize_schema_response` now replaces a schema-constrained String response
+      # with a `Content::Raw` wrapping the parsed `JSON::Any` (Code change 1). Accept
+      # either shape: a raw JSON String (parse failed → left as String) or the parsed
+      # `Content::Raw` (re-serialized so `from_json` does the authoritative typing).
       content = response.content
-      unless content.is_a?(String)
+      case content
+      when String
+        T.from_json(content)
+      when Content::Raw
+        T.from_json(content.value.to_json)
+      else
         raise SchemaResponseError.new(
-          "ask_as(#{T}) expected a String JSON response, got #{content.class}"
+          "ask_as(#{T}) expected a JSON String or Content::Raw response, got #{content.class}"
         )
       end
-      T.from_json(content)
     end
 
     # Derives the `{name, schema}` envelope (`Hash(String, JSON::Any)`) for struct
-    # type `T`. Walks `T.instance_vars`: each ivar is a property keyed by its
-    # `@[JSON::Field(key:)]` (or ivar name); non-nilable ivars are `required`. The
-    # `instance_vars` walk runs in this `forall T` body (an ordinary method body —
-    # the place `instance_vars` resolves; see the crystal macros reference).
+    # type `T`. The schema body is the recursive object fragment for `T` (see
+    # `object_schema_fragment` / `json_fragment_for`): each ivar is a property keyed by
+    # its `@[JSON::Field(key:)]` (or ivar name); non-nilable ivars are `required`, and
+    # nested `JSON::Serializable` structs/classes recurse into their own object schema.
     private def derive_typed_schema(klass : T.class) : Hash(String, JSON::Any) forall T
+      envelope = {} of String => JSON::Any
+      envelope["name"] = JSON::Any.new(self.class.schema_name_for({{ T.name(generic_args: false).stringify }}))
+      # The top-level object body is built directly here by walking `T.instance_vars`:
+      # `T` (the free type var) is correctly bound to the concrete instantiation ONLY in
+      # this `forall T` method body. (Routing it through a macro that `.resolve`s a `T`
+      # token does NOT bind per-instantiation — it mis-resolves — so the top-level walk
+      # is inlined.) Nested struct properties DO recurse through `json_fragment_for`,
+      # which is handed a concrete `ivar.type` and recurses via `object_schema_fragment`.
       properties = {} of String => JSON::Any
       required = [] of JSON::Any
-
       {% for ivar in T.instance_vars %}
         {%
           ann = ivar.annotation(::JSON::Field)
           key = (ann && ann[:key]) ? ann[:key] : ivar.name.stringify
           it = ivar.type
-          # Drop Nil from a union so e.g. `String?` schemas as a plain string; the
-          # nilability is encoded as "not required" in the parent object.
           non_nil = it.union? ? it.union_types.reject(&.==(Nil)) : [it]
           single = non_nil.size == 1 ? non_nil[0] : nil
           nilable = it.nilable?
         %}
         {% if single == nil %}
-          # A multi-member (non-nilable) union has no single JSON type — emit an
-          # unconstrained object; from_json does the authoritative typing.
           properties[{{key}}] = JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)
         {% else %}
-          properties[{{key}}] = JSON::Any.new(json_fragment_for({{single}}))
+          properties[{{key}}] = JSON::Any.new(::CrystalLLM::Chat.json_fragment_for({{single}}))
         {% end %}
         {% unless nilable %}
           required << JSON::Any.new({{key}})
@@ -368,18 +387,61 @@ module CrystalLLM
       schema["required"] = JSON::Any.new(required)
       schema["additionalProperties"] = JSON::Any.new(false)
 
-      envelope = {} of String => JSON::Any
-      envelope["name"] = JSON::Any.new(self.class.schema_name_for({{ T.name(generic_args: false).stringify }}))
       envelope["schema"] = JSON::Any.new(schema)
       envelope
     end
 
+    # Builds a `{type:"object", properties, required, additionalProperties}` schema
+    # fragment by walking a CONCRETE type's instance vars. Used by the nested-struct
+    # branch of `json_fragment_for` (passing a concrete `ivar.type` — NOT the free var
+    # `T`, which only resolves correctly inside `derive_typed_schema`'s method body).
+    # Each ivar's property schema is produced by `json_fragment_for` — which recurses
+    # back here for nested objects, so an N-level-nested `JSON::Serializable` graph
+    # yields a fully nested schema. Honors `@[JSON::Field(key:)]` for wire names and
+    # nilable→optional (a nilable ivar is omitted from `required`).
+    macro object_schema_fragment(type_node)
+      begin
+        %properties = {} of String => JSON::Any
+        %required = [] of JSON::Any
+        {% for ivar in type_node.resolve.instance_vars %}
+          {%
+            ann = ivar.annotation(::JSON::Field)
+            key = (ann && ann[:key]) ? ann[:key] : ivar.name.stringify
+            it = ivar.type
+            # Drop Nil from a union so e.g. `String?` schemas as a plain string; the
+            # nilability is encoded as "not required" in the parent object.
+            non_nil = it.union? ? it.union_types.reject(&.==(Nil)) : [it]
+            single = non_nil.size == 1 ? non_nil[0] : nil
+            nilable = it.nilable?
+          %}
+          {% if single == nil %}
+            # A multi-member (non-nilable) union has no single JSON type — emit an
+            # unconstrained object; from_json does the authoritative typing.
+            %properties[{{key}}] = JSON::Any.new({"type" => JSON::Any.new("object")} of String => JSON::Any)
+          {% else %}
+            %properties[{{key}}] = JSON::Any.new(::CrystalLLM::Chat.json_fragment_for({{single}}))
+          {% end %}
+          {% unless nilable %}
+            %required << JSON::Any.new({{key}})
+          {% end %}
+        {% end %}
+
+        %schema = {} of String => JSON::Any
+        %schema["type"] = JSON::Any.new("object")
+        %schema["properties"] = JSON::Any.new(%properties)
+        %schema["required"] = JSON::Any.new(%required)
+        %schema["additionalProperties"] = JSON::Any.new(false)
+        %schema
+      end
+    end
+
     # Maps a single (non-union) Crystal type to a JSON-schema fragment
-    # `Hash(String, JSON::Any)`. Recurses into `Array(T)` for the item schema.
-    # `Hash`/struct/unknown types fall back to an unconstrained object — the
-    # provider still gets a valid schema, and `from_json` does the real typing.
-    # `type_node` is interpolated as a type reference (a `Path`), so `.resolve`
-    # turns it back into a `TypeNode`.
+    # `Hash(String, JSON::Any)`. Recurses into `Array(T)` for the item schema and into
+    # nested `JSON::Serializable` structs/classes (any type with instance vars) for a
+    # nested object schema — so arrays-of-structs and N-level-nested graphs are honored.
+    # `Hash` and unknown/leaf types fall back to an unconstrained object — the provider
+    # still gets a valid schema, and `from_json` does the real typing. `type_node` is
+    # interpolated as a type reference (a `Path`), so `.resolve` yields a `TypeNode`.
     macro json_fragment_for(type_node)
       {% begin %}
         {% base = type_node.resolve %}
@@ -396,6 +458,13 @@ module CrystalLLM
             "type"  => JSON::Any.new("array"),
             "items" => JSON::Any.new(CrystalLLM::Chat.json_fragment_for({{ base.type_vars[0] }})),
           } of String => JSON::Any
+        {% elsif !(base <= Hash) && base.instance_vars.size > 0 %}
+          # A nested struct/class (a `JSON::Serializable` with instance vars): recurse
+          # into its own object schema (properties + required), matching ruby_llm-schema
+          # nested depth. `base` is a concrete resolved type, passed straight to the
+          # shared object-body builder. (Hash/leaf types fall through to the
+          # unconstrained object.)
+          ::CrystalLLM::Chat.object_schema_fragment({{ base }})
         {% else %}
           {"type" => JSON::Any.new("object")} of String => JSON::Any
         {% end %}
@@ -485,7 +554,7 @@ module CrystalLLM
       message
     end
 
-    def add_message(role : Role | Symbol | String, content : String | Content | Nil = nil,
+    def add_message(role : Role | Symbol | String, content : String | Content | Content::Raw | Nil = nil,
                     tool_call_id : String? = nil,
                     tool_calls : Hash(String, ToolCall)? = nil) : Message
       message = Message.new(role: role, content: content,
@@ -745,17 +814,20 @@ module CrystalLLM
     # ruby_llm's `normalize_schema_response`). On parse failure, keeps the string.
     private def normalize_schema_response(response : Message) : Nil
       return unless @schema
+      # Never parse an intermediate tool-call message: its content is not the
+      # schema-constrained final answer (ruby_llm's same `!response.tool_call?` guard).
       return if response.tool_call?
       content = response.content
       return unless content.is_a?(String)
 
-      JSON.parse(content)
-      # The parse succeeding means the content is valid JSON; ruby_llm replaces
-      # `response.content` with the parsed object. The port's Message#content is a
-      # String here (no JSON::Any content variant), so we leave the raw JSON string
-      # in place — downstream callers parse it. Documented divergence.
-
-
+      parsed = JSON.parse(content)
+      # ruby_llm does `response.content = JSON.parse(response.content)`, replacing the
+      # raw String with the PARSED object so a schema-constrained `ask` yields
+      # structured data. The port mirrors this by wrapping the parsed `JSON::Any` in a
+      # `Content::Raw`, so callers read the structured result via
+      # `response.content.as(CrystalLLM::Content::Raw).value`. (Both the sync and
+      # streaming paths call this, so both benefit.)
+      response.content = Content::Raw.new(parsed)
     rescue JSON::ParseException
       # keep content as the original string
     end

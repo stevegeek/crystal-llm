@@ -75,6 +75,47 @@ describe "CrystalLLM.configure" do
   end
 end
 
+describe "CrystalLLM::Configuration#inspect (secret redaction)" do
+  it "does not leak a set api key in inspect output" do
+    config = CrystalLLM::Configuration.new
+    config.openai_api_key = "sk-secret-key-should-not-appear"
+    output = config.inspect
+    output.should_not contain("sk-secret-key-should-not-appear")
+    output.should contain("[REDACTED]")
+  end
+
+  it "shows nil for an unset secret option" do
+    config = CrystalLLM::Configuration.new
+    # openai_api_key defaults to nil
+    config.inspect.should contain("openai_api_key=nil")
+  end
+
+  it "shows non-secret options in clear text" do
+    config = CrystalLLM::Configuration.new
+    config.default_model = "gpt-test"
+    output = config.inspect
+    output.should contain("gpt-test")
+    output.should contain("default_model=")
+  end
+
+  it "redacts bedrock_secret_key and bedrock_session_token" do
+    config = CrystalLLM::Configuration.new
+    config.bedrock_secret_key = "my-aws-secret"
+    config.bedrock_session_token = "session-token-value"
+    output = config.inspect
+    output.should_not contain("my-aws-secret")
+    output.should_not contain("session-token-value")
+  end
+
+  it "also redacts properties added by reopening the class that contain key/secret/token" do
+    config = CrystalLLM::Configuration.new
+    config.fake_provider_api_key = "fake-key-12345"
+    output = config.inspect
+    output.should_not contain("fake-key-12345")
+    output.should contain("[REDACTED]")
+  end
+end
+
 describe "CrystalLLM::Configuration#[]?" do
   it "reads String options by runtime name" do
     config = CrystalLLM::Configuration.new

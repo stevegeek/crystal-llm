@@ -56,23 +56,7 @@ module CrystalLLM
   #
   # Enumerable over Model::Info — supports `select`, `map`, `each`, etc.
   #
-  # IMPLEMENTED (PORTING.md #12):
-  # - `refresh!`   — fetches the models.dev API (https://models.dev/api.json),
-  #                  parses every provider's models into Model::Info, and replaces
-  #                  the process-wide registry (`@@instance`). The network call is
-  #                  routed through the OVERRIDABLE protected `fetch_models_dev_data`
-  #                  hook so specs can stub it with a fixture (NO live call in specs).
-  # - `save_to_json` — writes the current registry to a path as a JSON array of
-  #                    `Model::Info#to_h` (round-trips through `read_from_json`).
-  #
   # DEFERRED (from ruby_llm):
-  # - `refresh!` PROVIDER-FETCH + MERGE half — ruby_llm also calls each configured
-  #   provider's `list_models` and merges that with the models.dev data
-  #   (`fetch_provider_models`/`merge_with_existing`/`add_provider_metadata`). That
-  #   path depends on the Provider registry being instantiable from a live
-  #   Configuration (not yet ported), so this port implements ONLY the models.dev
-  #   fetch + replace. The `remote_only:` keyword is therefore irrelevant and
-  #   omitted. When Provider lands, layer the merge on top of `fetch_models_dev`.
   # - `load_from_database!` — ActiveRecord; belongs in crystal-llm-marten.
   # - `resolve` provider-instance half — ruby_llm's `resolve` returns
   #   `[Model::Info, ProviderInstance]`. This port returns just `Model::Info`
@@ -142,10 +126,12 @@ module CrystalLLM
 
     # Resets the singleton (test hook — mirrors ruby_llm's
     # `instance_variable_set(:@instance, nil)`). Also clears any installed
-    # `fetch_hook` so a stubbed fetch never leaks across specs.
+    # `fetch_hook`/`existing_models_hook`/`db_source` so stubs never leak across specs.
     def self.reset! : Nil
       @@instance = nil
       @@fetch_hook = nil
+      @@existing_models_hook = nil
+      @@db_source = nil
     end
 
     # ---- Class-level delegates ----
@@ -192,19 +178,346 @@ module CrystalLLM
       instance.image_models
     end
 
-    # Fetches the models.dev registry and REPLACES the process-wide singleton.
+    # Fetches models from all configured providers AND from models.dev, merges them,
+    # and REPLACES the process-wide singleton.
     #
-    # Mirrors ruby_llm's `refresh!`, scoped to the models.dev fetch (the
-    # provider-fetch + merge half is DEFERRED — see class-level comment). The HTTP
-    # call is routed through `fetch_models_dev_data` (overridable) so specs can
-    # stub it; on any fetch/parse failure the existing registry is kept (ruby_llm
-    # "Keeping existing.").
+    # Mirrors ruby_llm's `refresh!(remote_only:)` in full:
+    #   load_existing_models → fetch_provider_models → fetch_models_dev_models
+    #   → merge_with_existing → new(merged)
+    #
+    # *remote_only* — when true, skip local providers (ruby_llm parity).
+    #
+    # The models.dev HTTP call is routed through `fetch_models_dev_data` so specs
+    # can stub it (no live network in tests). Provider `list_models` calls are made
+    # directly via the provider instance; specs inject fake providers that return
+    # canned data. On any provider fetch failure the existing models for that
+    # provider are preserved (ruby_llm parity).
     #
     # Returns the refreshed `Models` instance.
-    def self.refresh! : Models
-      models = fetch_models_dev
-      @@instance = new(models) unless models.empty?
+    def self.refresh!(remote_only : Bool = false) : Models
+      existing_models = load_existing_models
+
+      provider_fetch = fetch_provider_models(remote_only: remote_only)
+      models_dev_fetch = fetch_models_dev_models(existing_models)
+
+      merged = merge_with_existing(existing_models, provider_fetch, models_dev_fetch)
+      @@instance = new(merged)
       instance
+    end
+
+    # ProviderFetchResult holds the result of `fetch_provider_models`.
+    # Mirrors ruby_llm's Hash result shape: models, fetched_providers, failed.
+    # Using a struct for type safety (avoids generic Hash(String, T) juggling).
+    struct ProviderFetchResult
+      getter models : Array(Model::Info)
+      getter fetched_providers : Array(String)
+      getter failed : Array(NamedTuple(slug: String, error: Exception))
+
+      def initialize(
+        @models : Array(Model::Info),
+        @fetched_providers : Array(String),
+        @failed : Array(NamedTuple(slug: String, error: Exception)),
+      )
+      end
+    end
+
+    # ModelDevFetchResult holds the result of `fetch_models_dev_models`.
+    # Mirrors ruby_llm's `{ models:, fetched: }` shape.
+    struct ModelsDevFetchResult
+      getter models : Array(Model::Info)
+      getter? fetched : Bool
+
+      def initialize(@models : Array(Model::Info), @fetched : Bool)
+      end
+    end
+
+    # ruby_llm `fetch_provider_models` — iterates configured providers, calls
+    # `list_models`, and collects results. Provider failures are caught: the
+    # provider's slug is added to `failed` but not to `fetched_providers`, so
+    # `merge_with_existing` will preserve the old models for that provider.
+    def self.fetch_provider_models(remote_only : Bool = true) : ProviderFetchResult
+      config = CrystalLLM.config
+      provider_classes = remote_only ? Provider.remote_providers : Provider.providers.values
+
+      models = [] of Model::Info
+      fetched_providers = [] of String
+      failed = [] of NamedTuple(slug: String, error: Exception)
+
+      provider_classes.each do |provider_class|
+        next if remote_only && provider_class.local?
+        next unless provider_class.configured?(config)
+
+        begin
+          provider_instance = provider_class.new(config)
+          models.concat(provider_instance.list_models)
+          fetched_providers << provider_class.slug unless fetched_providers.includes?(provider_class.slug)
+        rescue ex : Exception
+          failed << {slug: provider_class.slug, error: ex}
+        end
+      end
+
+      ProviderFetchResult.new(
+        models: models,
+        fetched_providers: fetched_providers,
+        failed: failed
+      )
+    end
+
+    # Backwards-compatible wrapper (ruby_llm spec-only method).
+    # Returns just the models array from `fetch_provider_models`.
+    def self.fetch_from_providers(remote_only : Bool = true) : Array(Model::Info)
+      fetch_provider_models(remote_only: remote_only).models
+    end
+
+    # ruby_llm `fetch_models_dev_models(existing_models)` — fetches models.dev and
+    # parses them; on failure falls back to the subset of existing_models that came
+    # from models.dev (preserving cached data, ruby_llm parity).
+    def self.fetch_models_dev_models(existing_models : Array(Model::Info)) : ModelsDevFetchResult
+      data = fetch_models_dev_data
+      models_raw = parse_models_dev(data)
+      # Only keep models whose id and provider are present (ruby_llm: `.reject { nil? }`)
+      fetched = models_raw.reject { |info| info.id.nil? || info.provider.nil? }
+      ModelsDevFetchResult.new(models: fetched, fetched: true)
+    rescue ex : Crest::RequestFailed | IO::Error | JSON::ParseException
+      # On failure keep the previously-fetched models.dev subset (ruby_llm parity).
+      cached = existing_models.select do |info|
+        meta = info.metadata
+        src = meta["source"]?
+        src && src.as_s? == "models.dev"
+      end
+      ModelsDevFetchResult.new(models: cached, fetched: false)
+    end
+
+    # ruby_llm `load_existing_models` — returns the current singleton's models if
+    # loaded, else falls back to the compile-time-embedded JSON.
+    # When `@@existing_models_hook` is set (test seam), returns its result instead.
+    def self.load_existing_models : Array(Model::Info)
+      if hook = @@existing_models_hook
+        return hook.call
+      end
+
+      existing = @@instance.try(&.all)
+      return existing if existing && !existing.empty?
+
+      load_models
+    end
+
+    # ruby_llm `merge_with_existing` — three-way merge of existing models,
+    # fresh provider-fetch results, and models.dev data.
+    #
+    # Providers that were successfully fetched have their old models replaced
+    # entirely; providers that failed to fetch keep their old models. The merged
+    # provider list is then merged with models.dev via `merge_models`.
+    def self.merge_with_existing(
+      existing_models : Array(Model::Info),
+      provider_fetch : ProviderFetchResult,
+      models_dev_fetch : ModelsDevFetchResult,
+    ) : Array(Model::Info)
+      # Group existing by provider; drop providers we just fetched fresh data for.
+      existing_by_provider = existing_models.group_by(&.provider.to_s)
+      preserved_models = existing_by_provider
+        .reject { |slug, _| provider_fetch.fetched_providers.includes?(slug) }
+        .values
+        .flatten
+
+      provider_models = provider_fetch.models + preserved_models
+
+      models_dev_models = if models_dev_fetch.fetched?
+                            models_dev_fetch.models
+                          else
+                            existing_models.select do |info|
+                              info.metadata["source"]?.try(&.as_s?) == "models.dev"
+                            end
+                          end
+
+      merge_models(provider_models, models_dev_models)
+    end
+
+    # ruby_llm `merge_models` — key-based outer join of provider models and
+    # models.dev models. For each key:
+    # - Both present → `add_provider_metadata` (models.dev wins; provider fills blanks)
+    # - models.dev only → use as-is
+    # - provider only → use as-is
+    # The result is `filter_models`-ed and sorted by [provider, id] (ruby_llm parity).
+    def self.merge_models(
+      provider_models : Array(Model::Info),
+      models_dev_models : Array(Model::Info),
+    ) : Array(Model::Info)
+      models_dev_by_key = index_by_key(models_dev_models)
+      provider_by_key = index_by_key(provider_models)
+
+      all_keys = (models_dev_by_key.keys + provider_by_key.keys).uniq!
+
+      merged = all_keys.compact_map do |key|
+        md_model = find_models_dev_model(key, models_dev_by_key)
+        prov_model = provider_by_key[key]?
+
+        if md_model && prov_model
+          add_provider_metadata(md_model, prov_model)
+        elsif md_model
+          md_model
+        else
+          # prov_model is guaranteed non-nil: the key came from provider_by_key.keys.
+          # compact_map drops nil (which can't happen here, but the union type requires it).
+          prov_model
+        end
+      end
+
+      filter_models(merged).sort_by { |info| {info.provider.to_s, info.id.to_s} }
+    end
+
+    # ruby_llm `find_models_dev_model` — looks up *key* ("provider:id") in the
+    # models.dev index with two special-cases:
+    # 1. Bedrock: strip leading region prefix (e.g. "us.") and strip ":Nk" context
+    #    override suffix, then look up; if found, return a copy with the original id
+    #    (and the overridden context_window if present).
+    # 2. VertexAI: look up the same model id under "gemini" and return a copy with
+    #    provider set to "vertexai".
+    def self.find_models_dev_model(key : String, models_dev_by_key : Hash(String, Model::Info)) : Model::Info?
+      return models_dev_by_key[key] if models_dev_by_key.has_key?(key)
+
+      colon_idx = key.index(':')
+      return nil unless colon_idx
+
+      provider = key[0...colon_idx]
+      model_id = key[(colon_idx + 1)..]
+
+      if provider == "bedrock"
+        # Strip two-letter region prefix (e.g. "us.", "eu.")
+        normalized_id = model_id.sub(/^[a-z]{2}\./, "")
+        context_override = nil
+
+        # Strip ":Nk" context override suffix (e.g. ":200k" → context_override=200000)
+        normalized_id = normalized_id.gsub(/:(\d+)k\b/) do |_match|
+          ctx_str = $~[1]
+          context_override = ctx_str.to_i * 1000
+          ""
+        end
+
+        bedrock_model = models_dev_by_key["bedrock:#{normalized_id}"]?
+        if bedrock_model
+          # Return copy with original model_id (and context override if present)
+          data = info_to_string_hash(bedrock_model)
+          data["id"] = JSON::Any.new(model_id)
+          data["context_window"] = JSON::Any.new(context_override.to_i64) if context_override
+          return Model::Info.new(data)
+        end
+      end
+
+      return nil unless provider == "vertexai"
+
+      gemini_model = models_dev_by_key["gemini:#{model_id}"]?
+      return nil unless gemini_model
+
+      # Return Gemini's models.dev data but with vertexai as provider.
+      data = info_to_string_hash(gemini_model)
+      data["provider"] = JSON::Any.new("vertexai")
+      Model::Info.new(data)
+    end
+
+    # ruby_llm `index_by_key` — builds a "provider:id" → Model::Info lookup Hash.
+    def self.index_by_key(models : Array(Model::Info)) : Hash(String, Model::Info)
+      result = {} of String => Model::Info
+      models.each do |info|
+        key = "#{info.provider}:#{info.id}"
+        result[key] = info
+      end
+      result
+    end
+
+    # ruby_llm `add_provider_metadata` — returns a new Model::Info starting from
+    # the models.dev model, filling blank fields from the provider model, merging
+    # metadata (provider metadata as base, models.dev metadata overwrites), and
+    # unioning capabilities.
+    def self.add_provider_metadata(models_dev_model : Model::Info, provider_model : Model::Info) : Model::Info
+      data = info_to_string_hash(models_dev_model)
+
+      fill_blank_scalar_fields(data, provider_model)
+      fill_blank_modalities(data, provider_model)
+      fill_blank_pricing(data, provider_model)
+
+      # Metadata: provider metadata as base, then models.dev metadata overwrites.
+      merged_meta = {} of String => JSON::Any
+      provider_model.metadata.each { |key, val| merged_meta[key] = val }
+      models_dev_model.metadata.each { |key, val| merged_meta[key] = val }
+      data["metadata"] = JSON::Any.new(merged_meta)
+
+      # Capabilities: union (models.dev + provider).
+      combined_caps = (models_dev_model.capabilities + provider_model.capabilities).uniq
+      data["capabilities"] = JSON::Any.new(combined_caps.map { |cap| JSON::Any.new(cap) })
+
+      # Re-normalize embedding modalities.
+      normalize_embedding_modalities(data, data["id"]?.try(&.as_s?))
+
+      Model::Info.new(data)
+    end
+
+    # Fills blank string/int scalar fields in *data* from the provider model.
+    private def self.fill_blank_scalar_fields(
+      data : Hash(String, JSON::Any),
+      provider_model : Model::Info,
+    ) : Nil
+      data["name"] = JSON::Any.new(provider_model.name.to_s) if blank_value?(data["name"]?)
+      data["family"] = JSON::Any.new(provider_model.family.to_s) if blank_value?(data["family"]?)
+      if blank_value?(data["created_at"]?)
+        if created = provider_model.created_at
+          data["created_at"] = JSON::Any.new(created.to_s)
+        end
+      end
+      if blank_value?(data["context_window"]?)
+        if cw = provider_model.context_window
+          data["context_window"] = JSON::Any.new(cw.to_i64)
+        end
+      end
+      if blank_value?(data["max_output_tokens"]?)
+        if mo = provider_model.max_output_tokens
+          data["max_output_tokens"] = JSON::Any.new(mo.to_i64)
+        end
+      end
+    end
+
+    # Fills blank modalities in *data* from the provider model.
+    private def self.fill_blank_modalities(
+      data : Hash(String, JSON::Any),
+      provider_model : Model::Info,
+    ) : Nil
+      return unless blank_value?(data["modalities"]?)
+
+      prov_mods = provider_model.modalities
+      data["modalities"] = JSON::Any.new({
+        "input"  => JSON::Any.new(prov_mods.input.map { |mod_str| JSON::Any.new(mod_str) }),
+        "output" => JSON::Any.new(prov_mods.output.map { |mod_str| JSON::Any.new(mod_str) }),
+      })
+    end
+
+    # Fills blank pricing in *data* from the provider model.
+    private def self.fill_blank_pricing(
+      data : Hash(String, JSON::Any),
+      provider_model : Model::Info,
+    ) : Nil
+      data["pricing"] = pricing_to_any(provider_model.pricing) if blank_value?(data["pricing"]?)
+    end
+
+    # ruby_llm `blank_value?` — a JSON::Any value is blank when it is nil, an empty
+    # string, an empty array, or a hash whose every nested value is blank.
+    def self.blank_value?(value : JSON::Any?) : Bool
+      return true if value.nil?
+
+      raw = value.raw
+      case raw
+      when Nil
+        true
+      when String
+        raw.empty?
+      when Array
+        raw.empty?
+      when Hash
+        return true if raw.empty?
+        # A hash is blank only if ALL nested values are blank.
+        raw.all? { |_key, nested| blank_value?(nested.as(JSON::Any)) }
+      else
+        false
+      end
     end
 
     # Fetches + parses the models.dev API into an array of Model::Info.
@@ -225,9 +538,20 @@ module CrystalLLM
     # clear with `reset!`/`clear_fetch_hook`.
     @@fetch_hook : Proc(JSON::Any)? = nil
 
+    # OVERRIDABLE existing-models hook (test hook). When set, `load_existing_models`
+    # returns the hook's result instead of reading `@@instance` / embedded JSON.
+    # Lets specs start `refresh!` from a clean slate without touching the embedded
+    # registry. Cleared by `reset!`.
+    @@existing_models_hook : Proc(Array(Model::Info))? = nil
+
     # Installs a stub for the models.dev fetch (test hook). Pass `nil` to clear.
     def self.fetch_hook=(hook : Proc(JSON::Any)?) : Nil
       @@fetch_hook = hook
+    end
+
+    # Installs a stub for `load_existing_models` (test hook). Pass `nil` to clear.
+    def self.existing_models_hook=(hook : Proc(Array(Model::Info))?) : Nil
+      @@existing_models_hook = hook
     end
 
     def self.clear_fetch_hook : Nil
@@ -375,11 +699,28 @@ module CrystalLLM
       File.write(file, payload.to_pretty_json)
     end
 
-    # DEFERRED: belongs in crystal-llm-marten (ActiveRecord).
-    def load_from_database! : NoReturn
+    # Registerable database source hook (Task 3b).
+    # Set to a `Proc` that returns an `Array(Model::Info)` to swap the registry
+    # from a database (e.g. crystal-llm-marten's `LlmModel`). Cleared by `reset!`.
+    @@db_source : Proc(Array(Model::Info))? = nil
+
+    # Installs (or clears) the database source used by `load_from_database!`.
+    def self.db_source=(hook : Proc(Array(Model::Info))?) : Nil
+      @@db_source = hook
+    end
+
+    # Replaces the in-memory registry with rows returned by the configured
+    # `db_source` proc. Raises a clear error when no source has been registered —
+    # callers must configure `Models.db_source` (e.g. via crystal-llm-marten's
+    # `acts_as_model` integration) before calling this.
+    def load_from_database! : Nil
+      source = @@db_source
       raise NotImplementedError.new(
-        "load_from_database! is deferred to crystal-llm-marten (ActiveRecord)."
-      )
+        "Models.db_source is not configured. Set it via Models.db_source = -> { ... } " \
+        "(e.g. crystal-llm-marten's acts_as_model integration) before calling load_from_database!."
+      ) unless source
+
+      @models = self.class.filter_models(source.call)
     end
 
     # ---- Class helpers ----
@@ -563,6 +904,35 @@ module CrystalLLM
 
     # ---- small JSON coercion helpers ----
 
+    # Converts a Model::Info into the `Hash(String, JSON::Any)` shape expected by
+    # `Model::Info.new`. Bridges the symbol-keyed, nullable `to_h` return type
+    # to the string-keyed, non-nullable wire constructor.
+    private def self.info_to_string_hash(info : Model::Info) : Hash(String, JSON::Any)
+      result = {} of String => JSON::Any
+      info.to_h.each do |sym_key, any_val|
+        next if any_val.nil?
+        result[sym_key.to_s] = any_val
+      end
+      result
+    end
+
+    # Converts a `Model::Pricing` to a JSON::Any suitable for the `pricing` field.
+    private def self.pricing_to_any(pricing : Model::Pricing) : JSON::Any
+      outer = {} of String => JSON::Any
+      pricing.to_h.each do |category, tiers|
+        inner = {} of String => JSON::Any
+        tiers.each do |tier_name, attributes|
+          attrs = {} of String => JSON::Any
+          attributes.each do |attr, value|
+            attrs[attr.key] = JSON::Any.new(value)
+          end
+          inner[tier_name] = JSON::Any.new(attrs)
+        end
+        outer[category] = JSON::Any.new(inner)
+      end
+      JSON::Any.new(outer)
+    end
+
     private def self.modalities_to_any(modalities : Hash(String, Array(String))) : JSON::Any
       JSON::Any.new(modalities.transform_values do |arr|
         JSON::Any.new(arr.map { |item| JSON::Any.new(item) })
@@ -625,6 +995,8 @@ module CrystalLLM
 
     private def find_with_provider(model_id : String, provider : String) : Model::Info
       resolved_id = Aliases.resolve(model_id, provider)
+      # For Bedrock, attempt to resolve to a region-prefixed inference-profile id.
+      resolved_id = resolve_bedrock_region_id(resolved_id) if provider == "bedrock"
       # Exact id match (post-alias-resolve) takes precedence
       match = @models.find { |info| info.id == resolved_id && info.provider == provider }
       return match if match
@@ -634,6 +1006,58 @@ module CrystalLLM
       return match if match
 
       raise_model_not_found(model_id, provider: provider)
+    end
+
+    # Mirrors ruby_llm's `resolve_bedrock_region_id`: when `bedrock_region` is
+    # configured and a region-prefixed inference-profile variant of *model_id*
+    # exists in the registry, prefer it. Uses the same logic as
+    # `Providers::Bedrock#normalize_inference_profile_id` (inlined here because the
+    # Bedrock provider helpers are private instance methods inaccessible from Models).
+    #
+    # Offline-safe: only registry lookups — no HTTP.
+    private def resolve_bedrock_region_id(model_id : String) : String
+      region = CrystalLLM.config.bedrock_region.to_s
+      return model_id if region.empty?
+
+      # Build the region-prefixed candidate id.
+      prefix = region.split('-').first? || "us"
+      prefix = "us" if prefix.empty?
+
+      candidate_id =
+        if bedrock_region_prefixed?(model_id)
+          model_id.sub(/\A(?:global|us|eu|ap|sa|ca|me|af|il)\./, "#{prefix}.")
+        else
+          "#{prefix}.#{model_id}"
+        end
+
+      return model_id if candidate_id == model_id
+
+      # Only prefer the prefixed id when a matching model exists and its
+      # `inference_types` metadata indicates it is an INFERENCE_PROFILE
+      # (not an ON_DEMAND model — which doesn't need a prefix).
+      candidate = @models.find { |info| info.provider == "bedrock" && info.id == candidate_id }
+      return model_id unless candidate
+
+      inference_types = bedrock_inference_types(candidate)
+      return model_id unless inference_types.includes?("INFERENCE_PROFILE")
+      return model_id if inference_types.includes?("ON_DEMAND")
+
+      candidate_id
+    end
+
+    # Extracts the `inference_types` array from a Bedrock model's metadata.
+    private def bedrock_inference_types(info : Model::Info) : Array(String)
+      raw = info.metadata["inference_types"]?
+      return [] of String unless raw
+      arr = raw.as_a?
+      return [] of String unless arr
+      arr.compact_map(&.as_s?)
+    end
+
+    # Returns true when *model_id* already carries a two-letter or named region
+    # prefix (e.g. "us.", "eu.", "global.").
+    private def bedrock_region_prefixed?(model_id : String) : Bool
+      !!model_id.match(/\A(?:global|us|eu|ap|sa|ca|me|af|il)\./)
     end
 
     private def find_without_provider(model_id : String) : Model::Info

@@ -6,10 +6,8 @@
 # Text-file attachments inline as a `{text: <file ...>}` part; document/unknown
 # attachments raise UnsupportedAttachmentError.
 #
-# DEFERRED: build_response_content / build_inline_attachment / build_file_attachment
-# (the *inbound* parse of Gemini parts back into a Content). That is response-side
-# (Chat parsing), not the outbound media formatting this gap covers; tracked here
-# and in PORTING.md.
+# build_response_content / build_inline_attachment / build_file_attachment (the
+# inbound parse of Gemini parts back into a Content) live in inbound_media.cr.
 require "json"
 require "../gemini"
 

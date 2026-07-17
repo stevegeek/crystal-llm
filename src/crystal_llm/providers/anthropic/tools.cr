@@ -67,7 +67,7 @@ module CrystalLLM
         # The `user` message carrying a `tool_result` block for a tool result message.
         def format_tool_result(msg : Message) : JSON::Any
           content = msg.content
-          if content.is_a?(Content::Raw)
+          if content.is_a?(CrystalLLM::Content::Raw)
             return JSON::Any.new({
               "role"    => JSON::Any.new("user"),
               "content" => content.value,

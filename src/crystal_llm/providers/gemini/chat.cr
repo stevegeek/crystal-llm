@@ -100,10 +100,14 @@ module CrystalLLM
         parts = data.dig?("candidates", 0, "content", "parts").try(&.as_a?) || [] of JSON::Any
         tool_calls = extract_tool_calls(data)
 
-        # ruby's `extract_text_parts(parts) || parse_content(data)`: parse_content
-        # returns "" (not nil) for a function-call candidate. So a tool-only
-        # response carries content "" rather than nil (nil-vs-empty parity).
-        content = extract_text_parts(parts)
+        # ruby's `extract_text_parts(parts) || parse_content(data)`:
+        # - extract_text_parts returns joined text (text-only path, fast)
+        # - parse_content → build_response_content handles inlineData / fileData
+        #   parts and returns a Content (with attachments) or String as needed.
+        # When only thought parts are present, both return nil (tool-only → "").
+        non_thought_parts = parts.reject { |part| part.as_h?.try(&.["thought"]?.try(&.as_bool?)) }
+        content : String | Content | Nil = extract_text_parts(non_thought_parts) ||
+          build_response_content(non_thought_parts)
         content = "" if content.nil? && tool_calls
 
         Message.new(
@@ -150,10 +154,11 @@ module CrystalLLM
         end
       end
 
-      # ---- content extraction (text-only; attachment rebuild deferred) ----
+      # ---- content extraction ----
 
       # Joins the text of all non-thought parts; nil when empty. (Thought parts are
-      # routed to Message#thinking via `extract_thought_parts`.)
+      # routed to Message#thinking via `extract_thought_parts`. Inline/file-data parts
+      # are rebuilt by build_response_content in inbound_media.cr.)
       def extract_text_parts(parts : Array(JSON::Any)) : String?
         content = String.build do |io|
           parts.each do |part_any|

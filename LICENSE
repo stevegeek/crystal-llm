@@ -1,9 +1,13 @@
+NOTICE: This project is a Crystal port of ruby_llm (https://github.com/crmne/ruby_llm)
+by Carmine Paolino, used under the MIT License. The original work, its API design,
+provider implementations, and data files are copyright (c) 2025 Carmine Paolino.
+
+---
+
 MIT License
 
-Copyright (c) 2026 Stephen Ierodiaconou
-
-This project is a port of ruby_llm (https://github.com/crmne/ruby_llm),
-Copyright (c) Carmine Paolino, also distributed under the MIT License.
+Copyright (c) 2025 Carmine Paolino (original ruby_llm)
+Copyright (c) 2026 the CrystalLLM authors (Crystal port)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

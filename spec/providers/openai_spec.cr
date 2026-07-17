@@ -216,6 +216,125 @@ describe CrystalLLM::Providers::OpenAI do
         provider.parse_completion_response(build_response(401, body))
       end
     end
+
+    # --- Token accounting (ported from ruby_llm providers/open_ai/chat_spec.rb) ---
+
+    # Rule 1: prompt_tokens_details.cached_tokens is subtracted from input_tokens.
+    # ruby_llm test: "captures cached token information when present"
+    it "subtracts prompt_tokens_details.cached_tokens from input_tokens" do
+      body = %(
+      {
+        "model": "gpt-4.1-nano",
+        "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+        "usage": {
+          "prompt_tokens": 8,
+          "completion_tokens": 4,
+          "prompt_tokens_details": {"cached_tokens": 6}
+        }
+      })
+      provider = configured_openai
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.cached_tokens.should eq(6)
+      # input = prompt(8) - cached(6) = 2
+      message.input_tokens.should eq(2)
+      message.output_tokens.should eq(4)
+      message.cache_creation_tokens.should eq(0)
+    end
+
+    # DeepSeek-style: prompt_cache_miss_tokens takes priority over prompt_tokens math.
+    # ruby_llm test: "normalizes DeepSeek cache hit and miss usage fields"
+    it "uses prompt_cache_miss_tokens as input_tokens when present (DeepSeek)" do
+      body = %(
+      {
+        "model": "deepseek-chat",
+        "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+        "usage": {
+          "prompt_tokens": 206,
+          "completion_tokens": 4,
+          "prompt_cache_hit_tokens": 192,
+          "prompt_cache_miss_tokens": 14
+        }
+      })
+      provider = configured_openai
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.input_tokens.should eq(14)
+      message.cached_tokens.should eq(192)
+      message.output_tokens.should eq(4)
+      message.cache_creation_tokens.should eq(0)
+    end
+
+    # Rule 2a: reasoning stays INSIDE output_tokens when
+    #   completion_tokens >= generated_from_total (total - prompt).
+    # ruby_llm test: "keeps OpenAI reasoning tokens inside completion output tokens"
+    it "keeps reasoning_tokens inside output_tokens when completion_tokens >= generated" do
+      # prompt=50, completion=1306, total=1356 → generated=1306 (== completion)
+      body = %(
+      {
+        "model": "gpt-5.5",
+        "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+        "usage": {
+          "prompt_tokens": 50,
+          "completion_tokens": 1306,
+          "total_tokens": 1356,
+          "completion_tokens_details": {"reasoning_tokens": 1087}
+        }
+      })
+      provider = configured_openai
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.output_tokens.should eq(1306)
+      message.thinking_tokens.should eq(1087)
+    end
+
+    # Rule 2b: when total - prompt > completion_tokens the reasoning was added on top;
+    #   output = generated (total - prompt).
+    # ruby_llm test: "adds reasoning tokens to output for OpenAI-compatible providers
+    #   that report them separately"
+    it "uses generated_tokens_from_total as output_tokens when reasoning is outside completion" do
+      # prompt=43, completion=101, total=9971 → generated=9928 > completion
+      body = %(
+      {
+        "model": "grok-4-fast-reasoning",
+        "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+        "usage": {
+          "prompt_tokens": 43,
+          "completion_tokens": 101,
+          "total_tokens": 9971,
+          "completion_tokens_details": {"reasoning_tokens": 9827}
+        }
+      })
+      provider = configured_openai
+      message = provider.parse_completion_response(build_response(200, body))
+
+      # generated = 9971 - 43 = 9928, which is > 101
+      message.output_tokens.should eq(9928)
+      message.thinking_tokens.should eq(9827)
+    end
+
+    # Top-level reasoning_tokens fallback (outside completion_tokens_details).
+    # ruby_llm test: "captures top-level reasoning tokens when providers report them
+    #   outside completion details"
+    it "reads top-level reasoning_tokens when not nested in completion_tokens_details" do
+      # prompt=33, completion=11395, total=11428 → generated=11395 (== completion)
+      body = %(
+      {
+        "model": "sonar-deep-research",
+        "choices": [{"message": {"role": "assistant", "content": "Hello!"}}],
+        "usage": {
+          "prompt_tokens": 33,
+          "completion_tokens": 11395,
+          "total_tokens": 11428,
+          "reasoning_tokens": 193947
+        }
+      })
+      provider = configured_openai
+      message = provider.parse_completion_response(build_response(200, body))
+
+      message.output_tokens.should eq(11395)
+      message.thinking_tokens.should eq(193947)
+    end
   end
 
   describe "#build_chunk" do

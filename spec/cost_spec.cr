@@ -213,4 +213,32 @@ describe CrystalLLM::Cost do
       aggregate.total.should eq(0.00001)
     end
   end
+
+  # ruby_llm's `normalize_model`: a String model id resolves against the registry;
+  # an unknown id yields a nil model (no pricing). Mirrors
+  # `RubyLLM.models.find(model.to_s)` + the `rescue ModelNotFoundError`.
+  describe "String model id (normalize_model)" do
+    it "resolves a String id against the registry and prices with it" do
+      unless CrystalLLM::Models.instance.all.any?(&.id.== "priced-model")
+        CrystalLLM::Models.instance.all << model
+      end
+
+      tokens = CrystalLLM::Tokens.new(input: 1_000, output: 2_000)
+      cost = CrystalLLM::Cost.new(tokens: tokens, model: "priced-model")
+
+      cost.model.try(&.id).should eq("priced-model")
+      close(cost.input, 0.001)
+      close(cost.output, 0.004)
+    end
+
+    it "treats an unknown String id as no model (nil), so costs are unpriced" do
+      cost = CrystalLLM::Cost.new(
+        tokens: CrystalLLM::Tokens.new(input: 1_000),
+        model: "no-such-model-xyz"
+      )
+
+      cost.model.should be_nil
+      cost.input.should be_nil # no pricing → unpriced
+    end
+  end
 end

@@ -430,6 +430,67 @@ describe CrystalLLM::Schema do
     end
   end
 
+  # Task 4: runtime `Schema.build` builder (recovers ruby_llm's `Schema.create`).
+  describe ".build (runtime builder)" do
+    it "produces the gem envelope from a runtime block, with nested object and array" do
+      schema = CrystalLLM::Schema.build("person", description: "A person") do |sch|
+        sch.string "city"
+        sch.integer "age", required: false
+        sch.object "addr" do |obj|
+          obj.string "street"
+          obj.string "zip", required: false
+        end
+        sch.array "tags", of: :string
+      end
+
+      result = schema.to_json_schema
+      result["name"].should eq(JSON::Any.new("person"))
+      result["description"].should eq(JSON::Any.new("A person"))
+
+      inner = result["schema"].as_h
+      inner["type"].should eq(JSON::Any.new("object"))
+      inner["additionalProperties"].should eq(JSON::Any.new(false))
+      inner["strict"].should eq(JSON::Any.new(true))
+
+      props = inner["properties"].as_h
+      props["city"].as_h["type"].should eq(JSON::Any.new("string"))
+      props["age"].as_h["type"].should eq(JSON::Any.new("integer"))
+
+      addr = props["addr"].as_h
+      addr["type"].should eq(JSON::Any.new("object"))
+      addr["properties"].as_h["street"].as_h["type"].should eq(JSON::Any.new("string"))
+      addr["required"].as_a.map(&.as_s).should eq(["street"])
+
+      tags = props["tags"].as_h
+      tags["type"].should eq(JSON::Any.new("array"))
+      tags["items"].as_h["type"].should eq(JSON::Any.new("string"))
+
+      required = inner["required"].as_a.map(&.as_s)
+      required.should contain("city")
+      required.should contain("addr")
+      required.should contain("tags")
+      required.should_not contain("age")
+    end
+
+    it "serializes to a JSON string usable as a structured-output schema" do
+      schema = CrystalLLM::Schema.build("answer") do |sch|
+        sch.string "text"
+      end
+      parsed = JSON.parse(schema.to_json)
+      parsed["name"].as_s.should eq("answer")
+      parsed["schema"]["properties"]["text"]["type"].as_s.should eq("string")
+    end
+
+    it "honors strict nil (omits the key) and additional_properties true" do
+      schema = CrystalLLM::Schema.build(strict: nil, additional_properties: true) do |sch|
+        sch.string "x"
+      end
+      inner = schema.to_json_schema["schema"].as_h
+      inner.has_key?("strict").should be_false
+      inner["additionalProperties"].should eq(JSON::Any.new(true))
+    end
+  end
+
   describe "per-subclass isolation" do
     it "keeps properties isolated between subclasses" do
       SchemaSpecHelpers::FlatPerson.properties.has_key?("title").should be_false

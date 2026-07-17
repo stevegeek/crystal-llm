@@ -203,10 +203,12 @@ describe "offline chat flow (integration)" do
       sent.dig("response_format", "json_schema", "name").as_s.should eq("person")
       sent.dig("response_format", "json_schema", "schema", "type").as_s.should eq("object")
 
-      # content is the JSON string; it parses (normalize_schema_response kept it valid)
+      # normalize_schema_response now replaces a valid-JSON schema response with the
+      # PARSED data wrapped in a Content::Raw (ruby_llm parity — structured ask yields
+      # parsed data, not a raw String). The parsed object is read via `.value`.
       content = response.content
-      content.should be_a(String)
-      JSON.parse(content.as(String))["name"].as_s.should eq("Ada")
+      content.should be_a(CrystalLLM::Content::Raw)
+      content.as(CrystalLLM::Content::Raw).value["name"].as_s.should eq("Ada")
     end
   end
 

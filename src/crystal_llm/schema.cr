@@ -442,6 +442,119 @@ module CrystalLLM
       to_json_schema.to_json
     end
 
+    # --- Runtime builder (recovers ruby_llm's `Schema.create`) ---------------
+
+    # Build a schema from a RUNTIME block, when the shape is not known at compile
+    # time. This recovers the capability of ruby_llm's `RubyLLM::Schema.create`
+    # (which we could not port as anonymous-class generation — Crystal has no
+    # runtime class synthesis). The block receives a `RuntimeBuilder` whose DSL
+    # mirrors the class-body DSL (`string` / `integer` / `number` / `boolean` /
+    # `null` / `object { |o| ... }` / `array(of:)`), and the result responds to
+    # `to_json_schema` / `to_json` — usable wherever a compiled `Schema` is (e.g.
+    # `chat.with_schema(...)`). Mirrors the blessed `DynamicTool` escape hatch.
+    #
+    #   schema = CrystalLLM::Schema.build("person", description: "A person") do |s|
+    #     s.string  "city"
+    #     s.integer "age", required: false
+    #     s.object  "addr" { |o| o.string "street" }
+    #     s.array   "tags", of: :string
+    #   end
+    #   schema.to_json_schema
+    def self.build(name : String? = nil, description : String? = nil,
+                   additional_properties : Bool = false, strict : Bool? = true,
+                   &block : RuntimeBuilder ->) : RuntimeBuilder
+      builder = RuntimeBuilder.new(name, description, additional_properties, strict)
+      block.call(builder)
+      builder
+    end
+
+    # The object returned by `Schema.build`. Delegates property accumulation to an
+    # internal `Builder` (the same one the class-body DSL uses), and emits the
+    # gem's `{name, description, schema}` envelope from `to_json_schema`.
+    class RuntimeBuilder
+      @builder : Builder
+
+      def initialize(@name : String? = nil, @description : String? = nil,
+                     @additional_properties : Bool = false, @strict : Bool? = true)
+        @builder = Builder.new
+      end
+
+      # Primitive properties.
+      def string(name : String, description : String? = nil, required : Bool = true,
+                 enum_values : Array(String)? = nil, min_length : Int32? = nil,
+                 max_length : Int32? = nil, pattern : String? = nil,
+                 format : String? = nil) : Nil
+        @builder.string(name, description: description, required: required,
+          enum_values: enum_values, min_length: min_length, max_length: max_length,
+          pattern: pattern, format: format)
+      end
+
+      def number(name : String, description : String? = nil, required : Bool = true,
+                 minimum : Float64? = nil, maximum : Float64? = nil,
+                 multiple_of : Float64? = nil) : Nil
+        @builder.number(name, description: description, required: required,
+          minimum: minimum, maximum: maximum, multiple_of: multiple_of)
+      end
+
+      def integer(name : String, description : String? = nil, required : Bool = true,
+                  minimum : Int32? = nil, maximum : Int32? = nil,
+                  multiple_of : Int32? = nil) : Nil
+        @builder.integer(name, description: description, required: required,
+          minimum: minimum, maximum: maximum, multiple_of: multiple_of)
+      end
+
+      def boolean(name : String, description : String? = nil, required : Bool = true) : Nil
+        @builder.boolean(name, description: description, required: required)
+      end
+
+      def null(name : String, description : String? = nil, required : Bool = true) : Nil
+        @builder.null(name, description: description, required: required)
+      end
+
+      # Nested object (explicit builder block, as in the class-body DSL).
+      def object(name : String, description : String? = nil, required : Bool = true,
+                 &block : Builder ->) : Nil
+        @builder.object(name, description: description, required: required, &block)
+      end
+
+      # Array of primitives (`of:`) or of objects (item block).
+      def array(name : String, description : String? = nil, required : Bool = true,
+                of : Symbol? = nil, min_items : Int32? = nil, max_items : Int32? = nil,
+                &block : Builder ->) : Nil
+        @builder.array(name, description: description, required: required, of: of,
+          min_items: min_items, max_items: max_items, &block)
+      end
+
+      def array(name : String, description : String? = nil, required : Bool = true,
+                of : Symbol? = nil, min_items : Int32? = nil, max_items : Int32? = nil) : Nil
+        @builder.array(name, description: description, required: required, of: of,
+          min_items: min_items, max_items: max_items)
+      end
+
+      # Produce the gem's `{name, description, schema}` envelope, identical in
+      # shape to a compiled `Schema#to_json_schema`.
+      def to_json_schema : Hash(String, JSON::Any)
+        schema = {} of String => JSON::Any
+        schema["type"] = JSON::Any.new("object")
+        schema["properties"] = JSON::Any.new(@builder.properties)
+        schema["required"] = JSON::Any.new(@builder.required.map { |req| JSON::Any.new(req) })
+        schema["additionalProperties"] = JSON::Any.new(@additional_properties)
+        unless (s = @strict).nil?
+          schema["strict"] = JSON::Any.new(s)
+        end
+
+        result = {} of String => JSON::Any
+        result["name"] = @name ? JSON::Any.new(@name) : JSON::Any.new(nil)
+        result["description"] = @description ? JSON::Any.new(@description) : JSON::Any.new(nil)
+        result["schema"] = JSON::Any.new(schema)
+        result
+      end
+
+      def to_json(*_args) : String
+        to_json_schema.to_json
+      end
+    end
+
     # Builds property hashes for a schema scope (the class body, or a nested
     # object / array-item). Each `object`/`array` block receives a fresh Builder.
     class Builder

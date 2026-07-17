@@ -65,7 +65,7 @@ module CrystalLLM
         blocks = [] of JSON::Any
         system_messages.each do |msg|
           content = msg.content
-          formatted = if content.is_a?(Content::Raw)
+          formatted = if content.is_a?(CrystalLLM::Content::Raw)
                         content.value
                       else
                         Media.format_content(content)
@@ -275,7 +275,7 @@ module CrystalLLM
 
       private def format_tool_call_message(msg : Message, thinking_enabled : Bool) : JSON::Any
         content = msg.content
-        if content.is_a?(Content::Raw)
+        if content.is_a?(CrystalLLM::Content::Raw)
           value = content.value
           blocks = value.as_a? || [value]
           blocks = prepend_thinking_block(blocks, msg, thinking_enabled)
@@ -335,7 +335,7 @@ module CrystalLLM
       end
 
       private def append_formatted_content(content_blocks : Array(JSON::Any),
-                                           content : String | Content | Nil) : Nil
+                                           content : String | CrystalLLM::Content | CrystalLLM::Content::Raw | Nil) : Nil
         formatted = Media.format_content(content)
         if arr = formatted.as_a?
           content_blocks.concat(arr)

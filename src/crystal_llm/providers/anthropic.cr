@@ -88,6 +88,8 @@ module CrystalLLM
 end
 
 require "./anthropic/media"
+require "./anthropic/content"
+require "./anthropic/embeddings"
 require "./anthropic/tools"
 require "./anthropic/chat"
 require "./anthropic/streaming"

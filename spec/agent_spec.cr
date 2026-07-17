@@ -106,6 +106,27 @@ private class GreeterAgent < CrystalLLM::Agent
   instructions { |ctx| "hi #{ctx.user}" }
 end
 
+# An agent whose instructions come from an ECR prompt template (the Crystal analog
+# of ruby_llm's `*.txt.erb` prompt files). The template references the typed `user`
+# input by bare name (`<%= user %>`), rendered in the Context's scope.
+private class TemplatedAgent < CrystalLLM::Agent
+  model "gpt-4o"
+  input user : String # ameba:disable Lint/UselessAssign
+  prompt_template "greeting", "#{__DIR__}/fixtures/agent_greeting.ecr"
+  instructions(&.prompt("greeting"))
+end
+
+# An agent whose prompt path is INFERRED by convention (no explicit path): the
+# template lives at `<agent_dir>/prompts/<class_snake>/<name>.ecr` — here
+# `spec/prompts/convention_agent/instructions.ecr` (the Crystal/ECR analog of
+# ruby_llm's `app/prompts/<class>/<name>.txt.erb`).
+private class ConventionAgent < CrystalLLM::Agent
+  model "gpt-4o"
+  input user : String # ameba:disable Lint/UselessAssign
+  prompt_template "instructions"
+  instructions(&.prompt("instructions"))
+end
+
 # A schema used by the macro tests.
 private class PersonSchema < CrystalLLM::Schema
   string "name"
@@ -134,7 +155,7 @@ private class DynamicSchemaAgent < CrystalLLM::Agent
 end
 
 # The system-message content of an agent's built Chat (or nil if none).
-private def system_content(agent : CrystalLLM::Agent) : String | CrystalLLM::Content | Nil
+private def system_content(agent : CrystalLLM::Agent) : String | CrystalLLM::Content | CrystalLLM::Content::Raw | Nil
   agent.chat.messages.find(&.role.system?).try(&.content)
 end
 
@@ -179,6 +200,28 @@ describe CrystalLLM::Agent do
     it "resolves a different input independently per instance" do
       system_content(GreeterAgent.new(user: "Ada")).should eq("hi Ada")
       system_content(GreeterAgent.new(user: "Lin")).should eq("hi Lin")
+    end
+  end
+
+  describe "an ECR prompt_template agent" do
+    it "renders a declared ECR template in the Context's typed scope" do
+      content = system_content(TemplatedAgent.new(user: "Samuel")).to_s
+      content.should contain("You are greeting Samuel.")
+      content.should contain("(a long name — 6 chars)") # `<%= user.size %>` works
+      content.should contain("Be warm and concise.")
+    end
+
+    it "renders the template per-instance with the right input" do
+      system_content(TemplatedAgent.new(user: "Jo")).to_s.should contain("greeting Jo.")
+      # "Jo" is 2 chars → the `if user.size > 3` ECR branch is skipped.
+      system_content(TemplatedAgent.new(user: "Jo")).to_s.should_not contain("long name")
+    end
+
+    it "infers the template path by convention when none is given" do
+      # ConventionAgent declares `prompt_template "instructions"` with no path →
+      # resolves to spec/prompts/convention_agent/instructions.ecr.
+      system_content(ConventionAgent.new(user: "Sam")).to_s
+        .should contain("Convention-inferred instructions for Sam.")
     end
   end
 

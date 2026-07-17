@@ -207,7 +207,7 @@ module CrystalLLM
         result
       end
 
-      private def format_content_arg(content : String | Content | Nil) : String | Content | Content::Raw | Nil
+      private def format_content_arg(content : String | Content | Content::Raw | Nil) : String | Content | Content::Raw | Nil
         content
       end
 

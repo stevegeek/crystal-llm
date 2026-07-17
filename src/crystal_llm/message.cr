@@ -34,7 +34,7 @@ module CrystalLLM
 
     # `cost`/`model_info` are implemented below (model/info and cost are ported):
     # `model_info` resolves `model_id` via the registry, `cost` builds a `Cost`.
-    def initialize(role : Role | Symbol | String, content : String | Content | Nil = nil,
+    def initialize(role : Role | Symbol | String, content : String | Content | Content::Raw | Nil = nil,
                    tool_calls : Hash(String, ToolCall)? = nil, tool_call_id : String? = nil,
                    model_id : String? = nil, tokens : Tokens? = nil, raw : JSON::Any? = nil,
                    thinking : Thinking? = nil,
@@ -54,8 +54,10 @@ module CrystalLLM
       @thinking = thinking
     end
 
-    # Unwraps a simple text Content back to the bare String (matches ruby_llm).
-    def content : String | Content | Nil
+    # Unwraps a simple text Content back to the bare String (matches ruby_llm). A
+    # `Content::Raw` (provider-native block payload) is NOT a `Content`, so it falls
+    # through the `is_a?(Content)` guard and is returned as-is.
+    def content : String | Content | Content::Raw | Nil
       c = @content
       if c.is_a?(Content) && (text = c.text) && c.attachments.empty?
         text
@@ -64,7 +66,7 @@ module CrystalLLM
       end
     end
 
-    def content=(value : String | Content | Nil)
+    def content=(value : String | Content | Content::Raw | Nil)
       @content = value
     end
 
@@ -76,7 +78,7 @@ module CrystalLLM
       (id = @tool_call_id) ? !id.empty? : false
     end
 
-    def tool_results : String | Content | Nil
+    def tool_results : String | Content | Content::Raw | Nil
       content if tool_result?
     end
 
@@ -141,8 +143,8 @@ module CrystalLLM
     # concern (PORTING.md). Here `content` is unwrapped via `#content` (String/Content),
     # `tool_calls` is passed through, and `thinking`/`thinking_signature` are wired —
     # the thinking round-trip is the point of this method landing now.
-    def to_h : Hash(Symbol, Role | String | Content | Hash(String, ToolCall) | Int32 | Nil)
-      result = {} of Symbol => Role | String | Content | Hash(String, ToolCall) | Int32 | Nil
+    def to_h : Hash(Symbol, Role | String | Content | Content::Raw | Hash(String, ToolCall) | Int32 | Nil)
+      result = {} of Symbol => Role | String | Content | Content::Raw | Hash(String, ToolCall) | Int32 | Nil
       result[:role] = @role
       result[:content] = content
       result[:model_id] = @model_id unless @model_id.nil?
@@ -173,13 +175,13 @@ module CrystalLLM
       end
     end
 
-    private def normalize_content(content : String | Content | Nil, role : Role,
-                                  tool_calls : Hash(String, ToolCall)?) : Content | String | Nil
+    private def normalize_content(content : String | Content | Content::Raw | Nil, role : Role,
+                                  tool_calls : Hash(String, ToolCall)?) : Content | Content::Raw | String | Nil
       return "" if role.assistant? && content.nil? && tool_calls && !tool_calls.empty?
 
       case content
       when String then Content.new(content)
-      else             content
+      else             content # Content / Content::Raw pass through unchanged
       end
     end
   end

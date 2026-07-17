@@ -18,12 +18,10 @@ module CrystalLLM
     # - The dynamic `%w[...].each { define_method "#{cap}?" }` capability
     #   predicates are written out explicitly (Crystal has no runtime
     #   `define_method`).
-    # - `created_at`/`knowledge_cutoff` use `Utils.to_time`/`Utils.to_date`
-    #   inline (Utils isn't ported as a module yet); `to_time` normalizes to UTC.
-    # - DEFERRED: `provider_class` (`RubyLLM::Provider.resolve`) — the Provider
-    #   registry isn't ported. `provider_class` returns nil and `label` therefore
-    #   falls back to the raw provider slug rather than the provider's display
-    #   name. Revisit when Provider lands.
+    # - `created_at`/`knowledge_cutoff` use `to_time`/`to_date` defined inline on
+    #   this class (not in Utils); `to_time` normalizes to UTC.
+    # - DEFERRED: `provider_class` is not wired — returns nil; `label` therefore
+    #   falls back to the raw provider slug rather than the provider's display name.
     class Info
       getter id : String?
       getter name : String?
@@ -187,8 +185,7 @@ module CrystalLLM
         Cost.new(tokens: tokens, model: self)
       end
 
-      # DEFERRED: Provider registry not ported. ruby_llm:
-      # `RubyLLM::Provider.resolve provider`.
+      # DEFERRED: not wired to Provider.resolve; returns nil (label falls back to slug).
       def provider_class : Nil
         nil
       end
