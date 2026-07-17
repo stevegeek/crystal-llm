@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/bedrock/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock/models.rb @ ruby_llm 1.16.0
 #
 # Models listing for AWS Bedrock (`/foundation-models` on the bedrock control-plane
 # host, not the runtime host used for chat).
@@ -17,6 +17,9 @@
 # - Model::Info built via `.build` (the native-value keyword constructor); modalities
 #   wrapped in Model::Modalities, pricing left empty (`Model::Pricing.new`).
 # - `@config.bedrock_region` read directly (ruby_llm threads it through the mixin).
+# - ruby_llm bf152ec8: `models_api_base` honors the same `@config.bedrock_api_base`
+#   override as the runtime-host `api_base` (bedrock.cr) — both fall back to the
+#   override value verbatim (no distinct control-plane vs. runtime override).
 require "json"
 require "../bedrock"
 require "../../model/modalities"
@@ -36,7 +39,7 @@ module CrystalLLM
 
       # The control-plane host for the models endpoint (ruby_llm's `models_api_base`).
       def models_api_base : String
-        "https://bedrock.#{@config.bedrock_region}.amazonaws.com"
+        @config.bedrock_api_base || "https://bedrock.#{@config.bedrock_region}.amazonaws.com"
       end
 
       def parse_list_models_response(response : Crest::Response, slug : String,

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai.rb (+ openai/{chat,models,streaming,tools,media,capabilities,temperature}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai.rb (+ openai/{chat,models,streaming,tools,media,capabilities,temperature}.rb) @ ruby_llm 1.16.0
 #
 # OpenAI chat provider: text chat + tools + streaming. ruby_llm splits OpenAI into
 # many `module_function` mixins included into one class; the Crystal port collapses
@@ -37,10 +37,10 @@ module CrystalLLM
   # of ruby_llm's `register_provider_options` — each provider file adds typed
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   class Configuration
-    property openai_api_key : String? = nil
-    property openai_api_base : String? = nil
-    property openai_organization_id : String? = nil
-    property openai_project_id : String? = nil
+    nilable_string_option openai_api_key
+    nilable_string_option openai_api_base
+    nilable_string_option openai_organization_id
+    nilable_string_option openai_project_id
     # ruby_llm exposes `openai_use_system_role` (Bool); kept as a Bool option.
     property openai_use_system_role : Bool = false
   end

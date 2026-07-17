@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/deepseek.rb (+ deepseek/{chat,capabilities}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/deepseek.rb (+ deepseek/{chat,capabilities}.rb) @ ruby_llm 1.16.0
 #
 # DeepSeek API integration. DeepSeek is OpenAI-compatible, so the Crystal port
 # subclasses Providers::OpenAI and overrides only what differs: api_base, headers,
@@ -31,8 +31,8 @@ module CrystalLLM
   # of ruby_llm's `register_provider_options` — see PORTING.md). Parallel-safe: this
   # provider adds only its own typed `property`s.
   class Configuration
-    property deepseek_api_key : String? = nil
-    property deepseek_api_base : String? = nil
+    nilable_string_option deepseek_api_key
+    nilable_string_option deepseek_api_base
   end
 
   module Providers

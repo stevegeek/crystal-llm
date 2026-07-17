@@ -44,6 +44,47 @@ describe CrystalLLM::Configuration do
       config.use_new_acts_as = true
       config.use_new_acts_as.should be_true
     end
+
+    it "defaults tool_concurrency to false" do
+      CrystalLLM::Configuration.new.tool_concurrency.should eq(false)
+    end
+
+    it "accepts a String tool_concurrency mode" do
+      config = CrystalLLM::Configuration.new
+      config.tool_concurrency = "fibers"
+      config.tool_concurrency.should eq("fibers")
+    end
+  end
+
+  # ruby_llm 93a47e3b: the `option` DSL strips blank strings to nil in every setter.
+  # The Crystal port has no shared setter hook (plain typed `property`), so this is
+  # ported per-option via the `nilable_string_option` macro (see configuration.cr).
+  describe "blank-value normalization (ruby_llm 93a47e3b)" do
+    it "normalizes blank strings to nil on nilable string options" do
+      config = CrystalLLM::Configuration.new
+      config.openai_api_key = "   "
+      config.openai_api_key.should be_nil
+      config.openai_api_key = "sk-real"
+      config.openai_api_key.should eq("sk-real")
+    end
+
+    it "normalizes an empty string to nil" do
+      config = CrystalLLM::Configuration.new
+      config.http_proxy = ""
+      config.http_proxy.should be_nil
+    end
+
+    it "leaves nil as nil" do
+      config = CrystalLLM::Configuration.new
+      config.http_proxy = nil
+      config.http_proxy.should be_nil
+    end
+
+    it "leaves a non-blank value untouched" do
+      config = CrystalLLM::Configuration.new
+      config.http_proxy = "  http://proxy.internal:8080  "
+      config.http_proxy.should eq("  http://proxy.internal:8080  ")
+    end
   end
 end
 

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/bedrock*.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock*.rb @ ruby_llm 1.16.0
 #
 # AWS Bedrock Converse API integration (chat + tools + streaming + models).
 #
@@ -59,19 +59,22 @@ module CrystalLLM
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   #
   # ruby_llm: configuration_options = %i[bedrock_api_key bedrock_secret_key
-  # bedrock_region bedrock_session_token].
+  # bedrock_region bedrock_session_token bedrock_api_base] (bf152ec8 adds the last one).
   class Configuration
-    property bedrock_api_key : String? = nil
-    property bedrock_secret_key : String? = nil
-    property bedrock_region : String? = nil
-    property bedrock_session_token : String? = nil
+    nilable_string_option bedrock_api_key
+    nilable_string_option bedrock_secret_key
+    nilable_string_option bedrock_region
+    nilable_string_option bedrock_session_token
+    # ruby_llm bf152ec8: overrides both the runtime host (`api_base` below) and the
+    # control-plane host (`models_api_base`, bedrock/models.cr) with the same value.
+    nilable_string_option bedrock_api_base
   end
 
   module Providers
     # AWS Bedrock Converse API integration.
     class Bedrock < Provider
       def api_base : String
-        "https://bedrock-runtime.#{bedrock_region}.amazonaws.com"
+        @config.bedrock_api_base || "https://bedrock-runtime.#{bedrock_region}.amazonaws.com"
       end
 
       # ruby_llm returns `{}` here and signs each request separately via the SigV4
@@ -93,7 +96,7 @@ module CrystalLLM
       end
 
       def self.configuration_options : Array(String)
-        %w[bedrock_api_key bedrock_secret_key bedrock_region bedrock_session_token]
+        %w[bedrock_api_key bedrock_secret_key bedrock_region bedrock_session_token bedrock_api_base]
       end
 
       # ruby_llm: `private def bedrock_region; @config.bedrock_region; end`.

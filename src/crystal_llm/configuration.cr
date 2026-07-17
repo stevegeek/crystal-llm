@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/configuration.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/configuration.rb @ ruby_llm 1.16.0
 require "log"
 
 module CrystalLLM
@@ -13,6 +13,25 @@ module CrystalLLM
     # maps to plain `property` (Crystal carries the default natively). Provider
     # files reopen this class and add their api-key/base options the same way.
 
+    # ruby_llm 93a47e3b: the `option` DSL now strips blank strings to nil in every
+    # setter (`value = nil if value.is_a?(String) && value.strip.empty?`), so an
+    # optional custom API base/credential set to "" falls back to its default and a
+    # required one is correctly reported as missing. The Crystal port has no shared
+    # setter hook to retrofit (plain typed `property`), so this is ported per-option:
+    # every `String?` option (credential/base-URL family — api keys, api bases,
+    # secrets, tokens, service-account keys, region/location/project ids) uses this
+    # macro instead of `property` to get an identical getter plus a normalizing
+    # setter. Non-nilable and non-String options (Bool, Int32, Float64, …) can't hold
+    # blank-as-nil and are untouched. Defined once here; every file that reopens
+    # `Configuration` (this file and every provider file) calls it the same way.
+    private macro nilable_string_option(name)
+      getter {{name.id}} : String? = nil
+
+      def {{name.id}}=(value : String?) : String?
+        @{{name.id}} = value.try { |v| v.strip.empty? ? nil : v }
+      end
+    end
+
     # System-level options. Provider options live in each provider file.
     property default_model : String = "gpt-5.4"
     property default_embedding_model : String = "text-embedding-3-small"
@@ -25,7 +44,7 @@ module CrystalLLM
     property use_new_acts_as : Bool = false
     # ruby_llm's `model_registry_source` (an ActiveRecord source object) — typed
     # loosely until the model registry lands; the AR variant lives in crystal-llm-marten.
-    property model_registry_source : String? = nil
+    nilable_string_option model_registry_source
 
     # The pluggable instrumentation sink (`nil` = no instrumentation, a transparent
     # no-op). Typed `Instrumenter?` rather than ruby_llm's untyped duck-typed slot.
@@ -38,7 +57,13 @@ module CrystalLLM
     property retry_interval : Float64 = 0.1
     property retry_backoff_factor : Int32 = 2
     property retry_interval_randomness : Float64 = 0.5
-    property http_proxy : String? = nil
+    nilable_string_option http_proxy
+
+    # ruby_llm 6695a859 (config part): `nil`/`false` disables concurrent tool
+    # execution; `true` or a mode name (e.g. `"fibers"`) enables it. Consumed by
+    # Task 3's `Chat`/`ToolConcurrency`. Ruby's Boolean-or-Symbol becomes
+    # Bool | String here (symbols-as-runtime-data -> String, design R5).
+    property tool_concurrency : Bool | String = false
 
     # Symbols-as-runtime-data become String here (design R5); becomes an enum when
     # deprecator.cr is ported.

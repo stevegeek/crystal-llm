@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/mistral*.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/mistral*.rb @ ruby_llm 1.16.0
 #
 # Mistral API integration (chat + tools + streaming + models). Mistral is an
 # OpenAI-compatible provider, so this subclasses Providers::OpenAI and overrides
@@ -25,14 +25,17 @@ module CrystalLLM
   # of ruby_llm's `register_provider_options`; each provider file adds typed
   # `property`s at compile time — see PORTING.md "register_provider_options pattern").
   class Configuration
-    property mistral_api_key : String? = nil
+    nilable_string_option mistral_api_key
+    # ruby_llm bf152ec8: lets a proxy/gateway/private endpoint stand in for the
+    # default Mistral host (consulted by `api_base` below).
+    nilable_string_option mistral_api_base
   end
 
   module Providers
     # Mistral API integration (chat + tools + streaming).
     class Mistral < OpenAI
       def api_base : String
-        "https://api.mistral.ai/v1"
+        @config.mistral_api_base || "https://api.mistral.ai/v1"
       end
 
       def headers : Hash(String, String)
@@ -52,7 +55,7 @@ module CrystalLLM
       end
 
       def self.configuration_options : Array(String)
-        ["mistral_api_key"]
+        %w[mistral_api_key mistral_api_base]
       end
     end
   end

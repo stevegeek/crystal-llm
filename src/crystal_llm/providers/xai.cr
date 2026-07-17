@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/xai.rb (+ xai/{chat,models}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/xai.rb (+ xai/{chat,models}.rb) @ ruby_llm 1.16.0
 #
 # xAI (Grok) API integration. xAI is OpenAI-compatible, so this subclasses
 # Providers::OpenAI and overrides only what differs:
@@ -44,14 +44,17 @@ module CrystalLLM
   # ruby_llm's `register_provider_options` — each provider file adds typed
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   class Configuration
-    property xai_api_key : String? = nil
+    nilable_string_option xai_api_key
+    # ruby_llm bf152ec8: lets a proxy/gateway/private endpoint stand in for the
+    # default xAI host (consulted by `api_base` below).
+    nilable_string_option xai_api_base
   end
 
   module Providers
     # xAI (Grok) API integration — OpenAI-compatible (see file header).
     class XAI < OpenAI
       def api_base : String
-        "https://api.x.ai/v1"
+        @config.xai_api_base || "https://api.x.ai/v1"
       end
 
       def headers : Hash(String, String)
@@ -86,7 +89,7 @@ module CrystalLLM
       end
 
       def self.configuration_options : Array(String)
-        ["xai_api_key"]
+        %w[xai_api_key xai_api_base]
       end
     end
   end

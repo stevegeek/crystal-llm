@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/anthropic*.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/anthropic*.rb @ ruby_llm 1.16.0
 #
 # Anthropic Claude API integration (chat + tools + streaming + models). ruby_llm
 # splits Anthropic into many `module_function` mixins (chat/streaming/tools/models/
@@ -50,8 +50,8 @@ module CrystalLLM
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   # ruby_llm's `configuration_options` is `%i[anthropic_api_key anthropic_api_base]`.
   class Configuration
-    property anthropic_api_key : String? = nil
-    property anthropic_api_base : String? = nil
+    nilable_string_option anthropic_api_key
+    nilable_string_option anthropic_api_base
   end
 
   module Providers

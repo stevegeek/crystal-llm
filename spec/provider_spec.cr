@@ -173,4 +173,99 @@ describe CrystalLLM::Provider do
       provider.parse_error(build_response(400, body)).should eq("first. . third")
     end
   end
+
+  # ports bf152ec8's spec/ruby_llm/provider_spec.rb "with API base configuration"
+  # context: every provider with a built-in default api_base honors a configured
+  # override and falls back to its default otherwise. One pair per provider.
+  describe "api_base overrides (ruby_llm bf152ec8)" do
+    it "honors the mistral_api_base override" do
+      config = CrystalLLM::Configuration.new
+      config.mistral_api_key = "test"
+      config.mistral_api_base = "https://proxy.internal/mistral"
+      CrystalLLM::Providers::Mistral.new(config).api_base.should eq("https://proxy.internal/mistral")
+    end
+
+    it "falls back to the default mistral api_base" do
+      config = CrystalLLM::Configuration.new
+      config.mistral_api_key = "test"
+      CrystalLLM::Providers::Mistral.new(config).api_base.should eq("https://api.mistral.ai/v1")
+    end
+
+    it "honors the perplexity_api_base override" do
+      config = CrystalLLM::Configuration.new
+      config.perplexity_api_key = "test"
+      config.perplexity_api_base = "https://proxy.internal/perplexity"
+      CrystalLLM::Providers::Perplexity.new(config).api_base.should eq("https://proxy.internal/perplexity")
+    end
+
+    it "falls back to the default perplexity api_base" do
+      config = CrystalLLM::Configuration.new
+      config.perplexity_api_key = "test"
+      CrystalLLM::Providers::Perplexity.new(config).api_base.should eq("https://api.perplexity.ai")
+    end
+
+    it "honors the xai_api_base override" do
+      config = CrystalLLM::Configuration.new
+      config.xai_api_key = "test"
+      config.xai_api_base = "https://proxy.internal/xai"
+      CrystalLLM::Providers::XAI.new(config).api_base.should eq("https://proxy.internal/xai")
+    end
+
+    it "falls back to the default xai api_base" do
+      config = CrystalLLM::Configuration.new
+      config.xai_api_key = "test"
+      CrystalLLM::Providers::XAI.new(config).api_base.should eq("https://api.x.ai/v1")
+    end
+
+    it "honors the vertexai_api_base override" do
+      config = CrystalLLM::Configuration.new
+      config.vertexai_project_id = "vertex-project"
+      config.vertexai_location = "us-east1"
+      config.vertexai_api_base = "https://proxy.internal/vertexai"
+      CrystalLLM::Providers::VertexAI.new(config).api_base.should eq("https://proxy.internal/vertexai")
+    end
+
+    it "falls back to the default vertexai api_base (region-derived)" do
+      config = CrystalLLM::Configuration.new
+      config.vertexai_project_id = "vertex-project"
+      config.vertexai_location = "us-east1"
+      CrystalLLM::Providers::VertexAI.new(config).api_base.should eq("https://us-east1-aiplatform.googleapis.com/v1beta1")
+    end
+
+    it "honors the bedrock_api_base override" do
+      config = CrystalLLM::Configuration.new
+      config.bedrock_api_key = "bedrock-key"
+      config.bedrock_secret_key = "bedrock-secret"
+      config.bedrock_region = "us-east-1"
+      config.bedrock_api_base = "https://proxy.internal/bedrock"
+      CrystalLLM::Providers::Bedrock.new(config).api_base.should eq("https://proxy.internal/bedrock")
+    end
+
+    it "falls back to the default bedrock api_base" do
+      config = CrystalLLM::Configuration.new
+      config.bedrock_api_key = "bedrock-key"
+      config.bedrock_secret_key = "bedrock-secret"
+      config.bedrock_region = "us-east-1"
+      CrystalLLM::Providers::Bedrock.new(config).api_base.should eq("https://bedrock-runtime.us-east-1.amazonaws.com")
+    end
+
+    # bedrock/models.cr has a second URL construction site (models_api_base, the
+    # control-plane host) that must honor the same override.
+    it "honors the bedrock_api_base override for the models control-plane host" do
+      config = CrystalLLM::Configuration.new
+      config.bedrock_api_key = "bedrock-key"
+      config.bedrock_secret_key = "bedrock-secret"
+      config.bedrock_region = "us-east-1"
+      config.bedrock_api_base = "https://proxy.internal/bedrock"
+      CrystalLLM::Providers::Bedrock.new(config).models_api_base.should eq("https://proxy.internal/bedrock")
+    end
+
+    it "falls back to the default bedrock models_api_base" do
+      config = CrystalLLM::Configuration.new
+      config.bedrock_api_key = "bedrock-key"
+      config.bedrock_secret_key = "bedrock-secret"
+      config.bedrock_region = "us-east-1"
+      CrystalLLM::Providers::Bedrock.new(config).models_api_base.should eq("https://bedrock.us-east-1.amazonaws.com")
+    end
+  end
 end

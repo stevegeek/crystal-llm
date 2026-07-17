@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini.rb (+ gemini/{chat,streaming,tools,models,media,capabilities}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini.rb (+ gemini/{chat,streaming,tools,models,media,capabilities}.rb) @ ruby_llm 1.16.0
 #
 # Native Gemini (generativelanguage.googleapis.com) chat provider: text chat +
 # tools + streaming + models + capabilities. Gemini has its OWN wire format
@@ -58,8 +58,8 @@ module CrystalLLM
   # of ruby_llm's `register_provider_options` — each provider file adds typed
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   class Configuration
-    property gemini_api_key : String? = nil
-    property gemini_api_base : String? = nil
+    nilable_string_option gemini_api_key
+    nilable_string_option gemini_api_base
   end
 
   module Providers

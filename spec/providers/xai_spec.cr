@@ -42,7 +42,8 @@ describe CrystalLLM::Providers::XAI do
   describe "configuration requirements/options" do
     it "requires only xai_api_key" do
       CrystalLLM::Providers::XAI.configuration_requirements.should eq(["xai_api_key"])
-      CrystalLLM::Providers::XAI.configuration_options.should eq(["xai_api_key"])
+      # ruby_llm bf152ec8 adds xai_api_base as an (optional) configuration option.
+      CrystalLLM::Providers::XAI.configuration_options.should eq(["xai_api_key", "xai_api_base"])
     end
   end
 

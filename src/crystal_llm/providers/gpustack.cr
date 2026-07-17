@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gpustack*.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gpustack*.rb @ ruby_llm 1.16.0
 # (gpustack.rb + gpustack/{chat,models,capabilities}.rb)
 #
 # GPUStack is an OpenAI-compatible (it is "based on Ollama" per ruby_llm) provider.
@@ -44,8 +44,8 @@ module CrystalLLM
   # of ruby_llm's `register_provider_options` (each provider file adds typed
   # `property`s at compile time; parallel-safe). See PORTING.md.
   class Configuration
-    property gpustack_api_base : String? = nil
-    property gpustack_api_key : String? = nil
+    nilable_string_option gpustack_api_base
+    nilable_string_option gpustack_api_key
   end
 
   module Providers

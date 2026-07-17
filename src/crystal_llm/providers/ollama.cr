@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/ollama.rb (+ ollama/{chat,models,capabilities,media}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/ollama.rb (+ ollama/{chat,models,capabilities,media}.rb) @ ruby_llm 1.16.0
 #
 # Ollama API integration. Ollama exposes an OpenAI-compatible chat/completions
 # surface, so ruby_llm's `Ollama < OpenAI` carries over directly: the Crystal port
@@ -43,8 +43,8 @@ module CrystalLLM
   # of ruby_llm's `register_provider_options` — see PORTING.md). Each provider file
   # adds its typed `property`s at compile time; this is parallel-safe.
   class Configuration
-    property ollama_api_base : String? = nil
-    property ollama_api_key : String? = nil
+    nilable_string_option ollama_api_base
+    nilable_string_option ollama_api_key
   end
 
   module Providers

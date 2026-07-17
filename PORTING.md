@@ -112,6 +112,16 @@ read as decisions, not omissions:
 - **`register_provider_options`** → there is no runtime registry method; each provider
   file reopens `class Configuration` and adds `property <provider>_api_key : String? = nil`
   (etc.) at compile time. `Provider.register`'s option-registration call is dropped.
+  **Update (ruby_llm 1.16.0 / `93a47e3b`):** ruby_llm's `option` DSL now strips blank
+  strings to nil in every setter. Since Crystal has no shared setter hook, every
+  `String?` option (system-level in `configuration.cr` and provider-added) uses the
+  `private macro nilable_string_option(name)` defined once in `configuration.cr`
+  instead of bare `property foo : String? = nil` — it expands to an identical getter
+  plus a setter that maps a blank/whitespace-only string to nil. Private macros ARE
+  visible across files that reopen the same class (verified: no file-scoping like
+  private top-level defs), so every provider file calls it the same way. Non-nilable
+  and non-String options (Bool, Int32, Float64, …) are untouched — they can't hold
+  blank-as-nil.
 - **`Configuration#[]?(key : String)`** — a macro-over-`instance_vars` string-key reader
   (the Crystal analog of ruby_llm's `@config.send(req)`). Add when the **Connection**
   layer / first provider lands; it powers `ensure_configured!` / `configured?`.

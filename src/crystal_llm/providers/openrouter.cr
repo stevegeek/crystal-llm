@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openrouter*.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openrouter*.rb @ ruby_llm 1.16.0
 #
 # OpenRouter chat provider: text chat + tools + streaming + models.
 # OpenRouter is an OpenAI-compatible aggregator, so this subclasses
@@ -31,8 +31,8 @@ module CrystalLLM
   # analog of ruby_llm's `register_provider_options`; see PORTING.md). Each provider
   # file adds its typed `property`s at compile time (parallel-safe).
   class Configuration
-    property openrouter_api_key : String? = nil
-    property openrouter_api_base : String? = nil
+    nilable_string_option openrouter_api_key
+    nilable_string_option openrouter_api_base
   end
 
   module Providers

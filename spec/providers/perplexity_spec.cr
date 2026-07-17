@@ -42,7 +42,8 @@ describe CrystalLLM::Providers::Perplexity do
   describe "configuration requirements/options" do
     it "requires the perplexity api key" do
       CrystalLLM::Providers::Perplexity.configuration_requirements.should eq(["perplexity_api_key"])
-      CrystalLLM::Providers::Perplexity.configuration_options.should eq(["perplexity_api_key"])
+      # ruby_llm bf152ec8 adds perplexity_api_base as an (optional) configuration option.
+      CrystalLLM::Providers::Perplexity.configuration_options.should eq(["perplexity_api_key", "perplexity_api_base"])
     end
   end
 

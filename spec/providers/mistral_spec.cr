@@ -43,7 +43,8 @@ describe CrystalLLM::Providers::Mistral do
   describe "configuration class methods" do
     it "requires and exposes mistral_api_key" do
       CrystalLLM::Providers::Mistral.configuration_requirements.should eq(["mistral_api_key"])
-      CrystalLLM::Providers::Mistral.configuration_options.should eq(["mistral_api_key"])
+      # ruby_llm bf152ec8 adds mistral_api_base as an (optional) configuration option.
+      CrystalLLM::Providers::Mistral.configuration_options.should eq(["mistral_api_key", "mistral_api_base"])
     end
 
     it "uses the Mistral capabilities helper" do

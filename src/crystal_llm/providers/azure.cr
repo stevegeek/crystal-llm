@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/azure.rb (+ azure/{chat,models,media,embeddings}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/azure.rb (+ azure/{chat,models,media,embeddings}.rb) @ ruby_llm 1.16.0
 #
 # Azure AI Foundry / OpenAI-compatible chat provider. Subclasses
 # CrystalLLM::Providers::OpenAI and overrides only what differs from stock OpenAI:
@@ -60,18 +60,18 @@ module CrystalLLM
   # ruby_llm's `register_provider_options` — each provider file adds typed `property`s
   # at compile time; see PORTING.md "register_provider_options pattern").
   class Configuration
-    property azure_api_base : String? = nil
-    property azure_api_key : String? = nil
+    nilable_string_option azure_api_base
+    nilable_string_option azure_api_key
     # Pre-minted Bearer token (ruby_llm's only AAD path: the caller supplies the token).
-    property azure_ai_auth_token : String? = nil
+    nilable_string_option azure_ai_auth_token
 
     # --- AAD client-credentials config (DIVERGENCE: not present in ruby_llm 1.15.0) ---
     # When all three are set, the provider mints (and caches) an AAD bearer token via the
     # OAuth2 client-credentials grant instead of requiring a pre-minted azure_ai_auth_token.
     # See providers/azure.cr header for the rationale.
-    property azure_tenant_id : String? = nil
-    property azure_client_id : String? = nil
-    property azure_client_secret : String? = nil
+    nilable_string_option azure_tenant_id
+    nilable_string_option azure_client_id
+    nilable_string_option azure_client_secret
   end
 
   module Providers

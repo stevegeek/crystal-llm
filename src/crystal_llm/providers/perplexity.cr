@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/perplexity.rb (+ perplexity/{chat,models,capabilities,media}.rb) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/perplexity.rb (+ perplexity/{chat,models,capabilities,media}.rb) @ ruby_llm 1.16.0
 #
 # Perplexity (Sonar) is an OpenAI-compatible chat provider. ruby_llm models it as
 # `Perplexity < OpenAI` including Perplexity::{Chat,Models}; the Crystal port keeps
@@ -44,14 +44,17 @@ module CrystalLLM
   # analog of ruby_llm's `register_provider_options` — each provider file adds typed
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   class Configuration
-    property perplexity_api_key : String? = nil
+    nilable_string_option perplexity_api_key
+    # ruby_llm bf152ec8: lets a proxy/gateway/private endpoint stand in for the
+    # default Perplexity host (consulted by `api_base` below).
+    nilable_string_option perplexity_api_base
   end
 
   module Providers
     # Perplexity (Sonar) API integration — OpenAI-compatible chat. See file header.
     class Perplexity < OpenAI
       def api_base : String
-        "https://api.perplexity.ai"
+        @config.perplexity_api_base || "https://api.perplexity.ai"
       end
 
       def headers : Hash(String, String)
@@ -77,7 +80,7 @@ module CrystalLLM
       end
 
       def self.configuration_options : Array(String)
-        ["perplexity_api_key"]
+        %w[perplexity_api_key perplexity_api_base]
       end
 
       # Perplexity returns HTML (not JSON) for auth errors; pull the <title> text and

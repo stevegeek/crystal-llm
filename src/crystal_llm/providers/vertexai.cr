@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/vertexai*.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/vertexai*.rb @ ruby_llm 1.16.0
 #
 # Google Vertex AI provider (CHAT path: chat + streaming + tools + models +
 # capabilities). In ruby_llm, `VertexAI < Gemini` and inherits the Gemini wire
@@ -45,12 +45,15 @@ module CrystalLLM
   # `property`s at compile time; see PORTING.md "register_provider_options pattern").
   #
   # ruby_llm's configuration_options: vertexai_project_id, vertexai_location,
-  # vertexai_service_account_key. `vertexai_service_account_key` doubles, in this port,
-  # as the best-effort bearer token until real OAuth lands (see vertexai.cr header).
+  # vertexai_service_account_key, vertexai_api_base (bf152ec8 adds the last one).
+  # `vertexai_service_account_key` doubles, in this port, as the best-effort bearer
+  # token until real OAuth lands (see vertexai.cr header).
   class Configuration
-    property vertexai_project_id : String? = nil
-    property vertexai_location : String? = nil
-    property vertexai_service_account_key : String? = nil
+    nilable_string_option vertexai_project_id
+    nilable_string_option vertexai_location
+    nilable_string_option vertexai_service_account_key
+    # ruby_llm bf152ec8: overrides the location-derived default host below.
+    nilable_string_option vertexai_api_base
   end
 
   module Providers
@@ -69,6 +72,10 @@ module CrystalLLM
       @service_account : ServiceAccount? = nil
 
       def api_base : String
+        @config.vertexai_api_base || default_api_base
+      end
+
+      private def default_api_base : String
         if @config.vertexai_location.to_s == "global"
           "https://aiplatform.googleapis.com/v1beta1"
         else
@@ -93,7 +100,7 @@ module CrystalLLM
       end
 
       def self.configuration_options : Array(String)
-        %w[vertexai_project_id vertexai_location vertexai_service_account_key]
+        %w[vertexai_project_id vertexai_location vertexai_service_account_key vertexai_api_base]
       end
     end
   end
