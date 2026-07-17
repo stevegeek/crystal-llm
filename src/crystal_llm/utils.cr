@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/utils.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/utils.rb @ ruby_llm 1.16.0
 #
 # Most of ruby_llm's Utils is Ruby-symbol/Hash plumbing that is a no-op or N/A in
 # Crystal (deep_stringify_keys: JSON keys are already strings; deep_symbolize_keys /
@@ -46,6 +46,33 @@ module CrystalLLM
       else
         value
       end
+    end
+
+    # Parses ISO date prefixes (YYYY-MM-DD, YYYY-MM, YYYY) into Time objects.
+    # Returns a Time in UTC: full dates parse as-is, YYYY-MM expands to the first
+    # of the month, YYYY expands to January 1. Returns nil for blank or malformed input.
+    #
+    # Note: ruby_llm returns Date; the Crystal port's established date type is Time (UTC).
+    def parse_iso_date_prefix(value : String | Time | Nil) : Time?
+      return value if value.is_a?(Time)
+      date = value.to_s.strip
+      return nil if date.empty?
+
+      begin
+        case date
+        when /\A\d{4}-\d{2}-\d{2}\z/ then Time.parse_utc(date, "%Y-%m-%d")
+        when /\A\d{4}-\d{2}\z/       then Time.parse_utc("#{date}-01", "%Y-%m-%d")
+        when /\A\d{4}\z/             then Time.parse_utc("#{date}-01-01", "%Y-%m-%d")
+        end
+      rescue Time::Format::Error | ArgumentError
+        nil
+      end
+    end
+
+    # Renders an ISO date prefix as a UTC midnight string: "YYYY-MM-DD 00:00:00 UTC".
+    # Returns nil when the date does not parse.
+    def iso_date_prefix_to_utc_midnight_string(value : String | Time | Nil) : String?
+      parse_iso_date_prefix(value).try { |date| "#{date.to_s("%Y-%m-%d")} 00:00:00 UTC" }
     end
   end
 end

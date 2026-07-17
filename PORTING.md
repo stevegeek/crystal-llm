@@ -36,7 +36,8 @@ explicit `param` macro for tools (no runtime signature inference); `ToolResult`
 union return; `JSON::Any` on the wire (`alias JSONData = Hash(String, JSON::Any)`);
 typed `with_schema(T)`/`ask_as` + `DynamicTool` escape hatches; explicit-context
 Agent API; symbols-as-runtime-data → `String`/enum. Crest replaces Faraday; SSE
-parsed in-tree.
+parsed in-tree. **Utils.safe_constantize not ported:** Ruby runtime constant lookup
+has no Crystal equivalent; its only consumer is ActiveStorage duck-typing (N/A).
 
 ## Data files
 

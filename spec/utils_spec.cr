@@ -76,4 +76,34 @@ describe CrystalLLM::Utils do
       override["new"]["k"].as_i.should eq(1) # override input untouched
     end
   end
+
+  describe ".parse_iso_date_prefix" do
+    it "parses full ISO dates" do
+      CrystalLLM::Utils.parse_iso_date_prefix("2026-06-08").should eq(Time.utc(2026, 6, 8))
+    end
+
+    it "expands year-month to the first of the month" do
+      CrystalLLM::Utils.parse_iso_date_prefix("2026-06").should eq(Time.utc(2026, 6, 1))
+    end
+
+    it "expands bare years to Jan 1" do
+      CrystalLLM::Utils.parse_iso_date_prefix("2026").should eq(Time.utc(2026, 1, 1))
+    end
+
+    it "returns nil for blank and malformed input" do
+      CrystalLLM::Utils.parse_iso_date_prefix("").should be_nil
+      CrystalLLM::Utils.parse_iso_date_prefix("junk").should be_nil
+      CrystalLLM::Utils.parse_iso_date_prefix("2026-13-40").should be_nil
+    end
+  end
+
+  describe ".iso_date_prefix_to_utc_midnight_string" do
+    it "renders UTC midnight strings" do
+      CrystalLLM::Utils.iso_date_prefix_to_utc_midnight_string("2026-06").should eq("2026-06-01 00:00:00 UTC")
+    end
+
+    it "returns nil when the date does not parse" do
+      CrystalLLM::Utils.iso_date_prefix_to_utc_midnight_string("junk").should be_nil
+    end
+  end
 end
