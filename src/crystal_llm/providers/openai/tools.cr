@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/tools.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/tools.rb @ ruby_llm 1.16.0
 #
 # Tool (de)serialization for the OpenAI chat API.
 #

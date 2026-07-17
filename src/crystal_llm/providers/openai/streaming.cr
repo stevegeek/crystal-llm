@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/streaming.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/streaming.rb @ ruby_llm 1.16.0
 #
 # Builds a Chunk from one OpenAI SSE `data:` event. The Streaming mixin (streaming.cr)
 # drives the SSE loop and calls `build_chunk` per parsed event; this is the OpenAI

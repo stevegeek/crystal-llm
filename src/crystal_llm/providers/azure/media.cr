@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/azure/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/azure/media.rb @ ruby_llm 1.16.0
 #
 # Azure media formatting. Azure is OpenAI-compatible but has its own image part
 # shape: `{type:"image_url", image_url:{url}}` — similar to OpenAI but without

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/mistral/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/mistral/models.rb @ ruby_llm 1.16.0
 #
 # Mistral's list-models endpoint shares OpenAI's `models` path but maps each row
 # through the richer Mistral capabilities helper (display name / family / modalities

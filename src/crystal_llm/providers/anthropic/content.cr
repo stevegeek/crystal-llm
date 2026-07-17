@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/anthropic/content.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/anthropic/content.rb @ ruby_llm 1.16.0
 #
 # Helper for constructing Anthropic native content blocks. Builds a
 # `CrystalLLM::Content::Raw` wrapping an array of Anthropic content-block hashes,

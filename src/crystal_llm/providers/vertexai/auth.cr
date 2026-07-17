@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/vertexai.rb (auth path) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/vertexai.rb (auth path) @ ruby_llm 1.16.0
 #
 # Google service-account -> OAuth2 access-token minting for Vertex AI.
 #

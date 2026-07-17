@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/azure/embeddings.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/azure/embeddings.rb @ ruby_llm 1.16.0
 #
 # Azure AI Foundry embeddings hooks, reopening Providers::Azure. ruby_llm mixes
 # these in via the `Azure::Embeddings` `module_function` module; the Crystal port

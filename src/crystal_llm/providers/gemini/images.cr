@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/images.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/images.rb @ ruby_llm 1.16.0
 #
 # Gemini (Imagen) image-generation hooks (images_url / render_image_payload /
 # parse_image_response), reopening Providers::Gemini. Gemini uses the Imagen

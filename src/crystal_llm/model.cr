@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/model.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/model.rb @ ruby_llm 1.16.0
 require "./model/modalities"
 require "./model/pricing_tier"
 require "./model/pricing_category"

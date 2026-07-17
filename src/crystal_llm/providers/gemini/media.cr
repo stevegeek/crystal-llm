@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/media.rb @ ruby_llm 1.16.0
 #
 # Gemini media formatting -> the `parts` array of a content/role entry. Gemini
 # represents content as a list of "parts" objects: `{text: ...}` for text,

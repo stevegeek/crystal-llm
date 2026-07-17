@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/capabilities.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/capabilities.rb @ ruby_llm 1.16.0
 #
 # Provider-level capability checks and narrow registry fallbacks (used by
 # `parse_list_models_response`).

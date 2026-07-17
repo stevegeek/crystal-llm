@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/bedrock/models.rb (the capability predicates) @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock/models.rb (the capability predicates) @ ruby_llm 1.16.0
 #
 # Bedrock derives most capabilities/pricing from the live `/foundation-models`
 # summary rows (see models.cr#parse_capabilities), not a static registry. So this

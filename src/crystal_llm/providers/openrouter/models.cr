@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openrouter/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openrouter/models.rb @ ruby_llm 1.16.0
 #
 # OpenRouter's `/models` returns a much richer per-model record than OpenAI's
 # (architecture input/output modalities, per-million pricing, supported_parameters,

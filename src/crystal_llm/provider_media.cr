@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/provider.rb @ ruby_llm 1.15.0 (the media-pipeline half)
+# ported from lib/ruby_llm/provider.rb @ ruby_llm 1.16.0 (the media-pipeline half)
 #
 # Reopens CrystalLLM::Provider to add the MEDIA request pipeline (embed / paint /
 # moderate / transcribe) and the provider hooks each dispatches to (raising stubs

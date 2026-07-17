@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/anthropic/embeddings.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/anthropic/embeddings.rb @ ruby_llm 1.16.0
 #
 # Anthropic does not support embeddings. This module overrides the three embedding
 # provider hooks to raise a clear error, completing surface parity with ruby_llm's

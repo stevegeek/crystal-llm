@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/azure/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/azure/chat.rb @ ruby_llm 1.16.0
 #
 # Azure chat URL + message formatting overrides. Azure routes chat completions
 # through `azure_endpoint("chat")` (deployment/resource/v1 detection) and emits the

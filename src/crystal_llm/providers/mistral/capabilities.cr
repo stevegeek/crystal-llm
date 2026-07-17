@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/mistral/capabilities.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/mistral/capabilities.rb @ ruby_llm 1.16.0
 #
 # Mistral capability + display/metadata helpers used by parse_list_models_response.
 #

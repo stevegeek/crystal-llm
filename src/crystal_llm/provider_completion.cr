@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/provider.rb @ ruby_llm 1.15.0 (the completion pipeline half)
+# ported from lib/ruby_llm/provider.rb @ ruby_llm 1.16.0 (the completion pipeline half)
 #
 # Reopens CrystalLLM::Provider to add the chat-completion request pipeline
 # (`complete`/`sync_response`) and the provider hooks the pipeline dispatches to

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openrouter/images.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openrouter/images.rb @ ruby_llm 1.16.0
 #
 # OpenRouter image-generation hooks (images_url / render_image_payload /
 # parse_image_response / build_image_from_url), reopening Providers::OpenRouter.

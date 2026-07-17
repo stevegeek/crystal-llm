@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/tools.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/tools.rb @ ruby_llm 1.16.0
 #
 # Tool (de)serialization for the Gemini API. Gemini wraps all functions in a
 # single `tools: [{ functionDeclarations: [...] }]` entry, and uses UPPERCASE

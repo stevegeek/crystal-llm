@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openrouter/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openrouter/chat.rb @ ruby_llm 1.16.0
 #
 # OpenRouter's chat request surface. The only material divergence from OpenAI's
 # render_payload is the thinking config: OpenRouter takes a `reasoning` *object*

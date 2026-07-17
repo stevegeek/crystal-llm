@@ -6,16 +6,19 @@ work after a mechanical `RubyLLM → CrystalLLM` swap plus type annotations.
 
 ## Upstream reference
 
-- Ported from **ruby_llm v1.15.0**.
+- Ported from **ruby_llm v1.16.0**.
+- The port now tracks the **1.16.0** tag; `../ruby_llm-source/` is checked out
+  detached at `1.16.0` (was the `6e634fd` pre-release snapshot before this pass).
 - Read-only clone for reference: `../ruby_llm-source/` (`lib/ruby_llm/**`).
 - Each ported source file carries a header: `# ported from lib/ruby_llm/<x>.rb @ ruby_llm <version>`.
 
 ## Versioning policy
 
-- **Now (pre-parity): `0.x`.** We are building toward the 1.15.0 surface; shipping
-  a literal `1.15.0` before the public API matches would mislead.
 - **At parity: adopt matching version numbers.** Once the public surface matches a
   given ruby_llm release, CrystalLLM `X.Y.Z` ⇔ ruby_llm `X.Y.Z`.
+- **Now: `1.16.0`.** The public surface matches ruby_llm 1.16.0 (see the Status
+  block below), so `shard.yml` and `VERSION` were bumped from the pre-parity
+  `0.1.0` to `1.16.0` to match.
 - Re-porting a new upstream release = `git diff <old-tag>..<new-tag>` on the gem,
   mapped file-by-file. The 1:1 layout keeps this mechanical.
 

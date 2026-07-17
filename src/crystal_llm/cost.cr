@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/cost.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/cost.rb @ ruby_llm 1.16.0
 require "./tokens"
 require "./model/pricing_category"
 require "./model/info"

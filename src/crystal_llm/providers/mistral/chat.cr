@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/mistral/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/mistral/chat.rb @ ruby_llm 1.16.0
 #
 # Mistral's chat request/response surface. It is OpenAI-compatible, so this only
 # overrides the spots where Mistral diverges from the OpenAI port:

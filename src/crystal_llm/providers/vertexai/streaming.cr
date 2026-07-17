@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/vertexai/streaming.rb + lib/ruby_llm/providers/gemini/streaming.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/vertexai/streaming.rb + lib/ruby_llm/providers/gemini/streaming.rb @ ruby_llm 1.16.0
 #
 # stream_url is the VertexAI override; build_chunk is the Gemini delta -> Chunk mapping.
 #

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm.rb @ ruby_llm 1.16.0
 #
 # The top-level `CrystalLLM` facade: the `class << self` entry points from
 # ruby_llm.rb (`chat`, `models`, `providers`, `context`). This reopens the

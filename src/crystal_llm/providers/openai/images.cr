@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/images.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/images.rb @ ruby_llm 1.16.0
 #
 # OpenAI image-generation hooks (images_url / render_image_payload /
 # parse_image_response / validate_paint_inputs!), reopening Providers::OpenAI.

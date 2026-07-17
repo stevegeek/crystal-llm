@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/tools.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/tools.rb @ ruby_llm 1.16.0
 #   (Gemini wire format, used by VertexAI — see providers/vertexai.cr header)
 #
 # Tool (de)serialization for the Gemini/Vertex API.

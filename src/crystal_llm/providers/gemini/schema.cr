@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/chat.rb @ ruby_llm 1.16.0
 #   (the GeminiSchema class + structured_output_config / response_json_schema_supported? /
 #    gemini_version / build_json_schema helpers)
 #

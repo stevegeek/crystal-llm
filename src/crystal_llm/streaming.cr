@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/streaming.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/streaming.rb @ ruby_llm 1.16.0
 #
 # ruby_llm's streaming is Faraday-specific (on_data handlers, env, version checks).
 # The Crystal port streams crest's body_io, parses SSE in-tree (see sse.cr), and

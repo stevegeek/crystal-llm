@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/perplexity/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/perplexity/models.rb @ ruby_llm 1.16.0
 #
 # Perplexity has no list-models endpoint; the model set is a static MODEL_IDS list
 # enriched from Capabilities.

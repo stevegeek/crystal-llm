@@ -1,5 +1,5 @@
 name: crystal_llm
-version: 0.1.0
+version: 1.16.0
 
 description: |
   One beautiful Crystal API for GPT, Claude, Gemini, and more. A faithful port

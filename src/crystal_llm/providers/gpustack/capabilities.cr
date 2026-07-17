@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gpustack/capabilities.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gpustack/capabilities.rb @ ruby_llm 1.16.0
 #
 # Determines capabilities for GPUStack models. Both checks return false (GPUStack
 # does not support per-request tool_choice or parallel-tool-call control).

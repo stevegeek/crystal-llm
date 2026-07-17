@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/provider.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/provider.rb @ ruby_llm 1.16.0
 #
 # The base class for LLM providers: the class-level registry + per-instance config,
 # connection, configuration checks, and provider-error extraction. Provider-specific

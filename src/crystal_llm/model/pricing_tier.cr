@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/model/pricing_tier.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/model/pricing_tier.rb @ ruby_llm 1.16.0
 module CrystalLLM
   module Model
     # Stores non-zero pricing values for a single pricing tier.

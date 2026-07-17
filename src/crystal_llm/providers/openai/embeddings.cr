@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/embeddings.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/embeddings.rb @ ruby_llm 1.16.0
 #
 # OpenAI embeddings hooks (render_embedding_payload / parse_embedding_response /
 # embedding_url), reopening Providers::OpenAI. ruby_llm mixes these in via the

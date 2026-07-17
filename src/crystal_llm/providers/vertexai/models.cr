@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/vertexai/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/vertexai/models.rb @ ruby_llm 1.16.0
 #
 # Divergences:
 # - ruby_llm's `list_models` does its own paginated `@connection.get` loop (custom

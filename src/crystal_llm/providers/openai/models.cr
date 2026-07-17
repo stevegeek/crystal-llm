@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/models.rb @ ruby_llm 1.16.0
 #
 # Divergences:
 # - `response.body` is a raw String (Crest); JSON.parse it here.

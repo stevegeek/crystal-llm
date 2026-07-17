@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/anthropic/capabilities.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/anthropic/capabilities.rb @ ruby_llm 1.16.0
 #
 # Provider-level capability checks used outside the model registry.
 #

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/deprecator.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/deprecator.rb @ ruby_llm 1.16.0
 module CrystalLLM
   # Owns CrystalLLM deprecation warnings so applications and tests can decide how
   # aggressively to handle compatibility paths.

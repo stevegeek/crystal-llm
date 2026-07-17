@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/vertexai/embeddings.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/vertexai/embeddings.rb @ ruby_llm 1.16.0
 #
 # Vertex AI embeddings hooks (embedding_url / render_embedding_payload /
 # parse_embedding_response), reopening Providers::VertexAI. ruby_llm mixes these in

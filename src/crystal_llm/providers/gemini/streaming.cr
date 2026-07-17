@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/streaming.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/streaming.rb @ ruby_llm 1.16.0
 #
 # Builds a Chunk from one Gemini SSE event (streamGenerateContent?alt=sse). The
 # Streaming mixin (streaming.cr) drives the SSE loop and calls `build_chunk` per

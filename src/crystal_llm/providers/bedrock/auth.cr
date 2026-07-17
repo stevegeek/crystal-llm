@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/bedrock/auth.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock/auth.rb @ ruby_llm 1.16.0
 #
 # AWS SigV4 request signing for Bedrock — now LIVE.
 #

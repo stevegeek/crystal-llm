@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gpustack/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gpustack/models.rb @ ruby_llm 1.16.0
 #
 # Models methods of the GPUStack API integration. The model list lives at `models`
 # and returns a GPUStack `{ "items": [...] }` payload (not OpenAI's `{ "data": [...] }`).

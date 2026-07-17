@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/embedding.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/embedding.rb @ ruby_llm 1.16.0
 module CrystalLLM
   # Core embedding interface — a data holder for an embedding response.
   #

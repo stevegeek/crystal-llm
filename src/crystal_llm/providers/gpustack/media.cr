@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gpustack/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gpustack/media.rb @ ruby_llm 1.16.0
 #
 # GPUStack media formatting. GPUStack is OpenAI-compatible ("based on Ollama").
 # Its image part shape matches Ollama's: `{type:"image_url", image_url:{url,

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/context.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/context.rb @ ruby_llm 1.16.0
 require "./configuration"
 
 module CrystalLLM

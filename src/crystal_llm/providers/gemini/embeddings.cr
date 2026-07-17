@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/embeddings.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/embeddings.rb @ ruby_llm 1.16.0
 #
 # Gemini embeddings hooks (embedding_url / render_embedding_payload /
 # parse_embedding_response), reopening Providers::Gemini. Gemini's batch-embed

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/anthropic/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/anthropic/media.rb @ ruby_llm 1.16.0
 #
 # Formats content into Anthropic native content blocks:
 #   image -> {type:"image", source:{type:"url"|"base64", ...}}

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/deepseek/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/deepseek/chat.rb @ ruby_llm 1.16.0
 #
 # Chat overrides for DeepSeek. The bulk of the chat surface (render_payload,
 # parse_completion_response, format_messages, token accounting) is inherited

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/ollama/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/ollama/media.rb @ ruby_llm 1.16.0
 #
 # Ollama media formatting. Ollama is OpenAI-compatible, so most attachment types
 # delegate to OpenAI::Media. The only divergence is the image part shape: Ollama

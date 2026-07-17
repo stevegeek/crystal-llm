@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/bedrock/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock/chat.rb @ ruby_llm 1.16.0
 #
 # The AWS Bedrock Converse API request/response surface.
 #

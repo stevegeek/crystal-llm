@@ -1,5 +1,5 @@
 # ported from lib/ruby_llm/providers/vertexai/transcription.rb
-#   + lib/ruby_llm/providers/gemini/transcription.rb @ ruby_llm 1.15.0
+#   + lib/ruby_llm/providers/gemini/transcription.rb @ ruby_llm 1.16.0
 #
 # Vertex AI audio-transcription hooks, reopening Providers::VertexAI.
 #

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/agent.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/agent.rb @ ruby_llm 1.16.0
 #
 # Base class for class-configured agents. A subclass declares its model,
 # instructions, tools, temperature, and params at the class level; `Agent.new`

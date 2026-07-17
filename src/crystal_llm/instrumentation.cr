@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/instrumentation.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/instrumentation.rb @ ruby_llm 1.16.0
 #
 # Emits structured CrystalLLM events without requiring a specific observability
 # backend. A host app can plug in any instrumenter (the Rails analogue is

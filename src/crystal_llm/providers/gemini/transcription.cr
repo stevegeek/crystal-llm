@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/transcription.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/transcription.rb @ ruby_llm 1.16.0
 #
 # Gemini audio-transcription hooks (transcription_url / render_transcription_payload
 # / parse_transcription_response + the prompt/generation-config helpers), reopening

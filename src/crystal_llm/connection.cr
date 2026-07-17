@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/connection.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/connection.rb @ ruby_llm 1.16.0
 require "crest"
 require "json"
 require "uri"

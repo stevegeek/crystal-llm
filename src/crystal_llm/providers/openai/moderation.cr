@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/moderation.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/moderation.rb @ ruby_llm 1.16.0
 #
 # OpenAI moderation hooks (moderation_url / render_moderation_payload /
 # parse_moderation_response), reopening Providers::OpenAI.

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/thinking.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/thinking.rb @ ruby_llm 1.16.0
 module CrystalLLM
   # Represents provider thinking output.
   class Thinking

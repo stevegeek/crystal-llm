@@ -7,7 +7,7 @@ CrystalLLM mirrors ruby_llm's public API and tracks its version numbers, so the
 `RubyLLM → CrystalLLM` swap plus Crystal type annotations. If you know ruby_llm,
 you already know CrystalLLM.
 
-> **Status: pre-1.0 (`0.x`), ~80–85% parity with ruby_llm 1.15.0.**
+> **Status: full parity with ruby_llm 1.16.0.**
 > Core paths (chat, tools, streaming, structured output, embeddings, image generation,
 > transcription, moderation) are ported and working across all 13 providers.
 > See [`PORTING.md`](PORTING.md) for the roadmap and versioning policy.
@@ -22,7 +22,7 @@ and architectural vision belongs to Carmine Paolino and the ruby_llm contributor
 
 - **Original project:** https://github.com/crmne/ruby_llm
 - **Original documentation:** https://rubyllm.com
-- **Ported from:** ruby_llm 1.15.0
+- **Ported from:** ruby_llm 1.16.0
 
 ---
 
@@ -159,7 +159,7 @@ WeatherAssistant.new.ask("What's the weather in Berlin?")
 
 OpenAI, xAI, Anthropic, Gemini, VertexAI, Bedrock (SigV4), DeepSeek, Mistral,
 Ollama, OpenRouter, Perplexity, GPUStack, and any OpenAI-compatible API —
-the same 13 providers as ruby_llm 1.15.0.
+the same 13 providers as ruby_llm 1.16.0.
 
 ---
 
@@ -192,11 +192,9 @@ type annotations where required.
 
 ## Version / parity
 
-- **Pre-parity (`0.x`):** Being built out toward ruby_llm 1.15.0 parity.
-  Current state: ~80–85% functional parity (core chat/tools/streaming/structured
-  output working; see PORTING.md for what remains).
-- **At parity:** CrystalLLM adopts matching version numbers. `crystal_llm X.Y.Z`
-  will track `ruby_llm X.Y.Z` from that point forward.
+- **At parity:** CrystalLLM adopts matching version numbers. The public surface
+  now matches ruby_llm 1.16.0, so `crystal_llm` is versioned `1.16.0`; future
+  releases will track `ruby_llm X.Y.Z` the same way.
 
 ---
 

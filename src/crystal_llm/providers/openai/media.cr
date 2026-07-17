@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/media.rb @ ruby_llm 1.16.0
 #
 # Formats a Content's text + attachments into OpenAI chat content parts:
 #   image -> {type:"image_url", image_url:{url: data-or-source-URL}}

@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/temperature.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/temperature.rb @ ruby_llm 1.16.0
 require "../openai"
 
 module CrystalLLM
