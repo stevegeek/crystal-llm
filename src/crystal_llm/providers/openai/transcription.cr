@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/openai/transcription.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/openai/transcription.rb @ ruby_llm 1.16.0
 #
 # OpenAI audio-transcription hooks (transcription_url / render_transcription_payload
 # / parse_transcription_response + the chunking/response_format helpers), reopening
@@ -125,6 +125,7 @@ module CrystalLLM
           language: data["language"]?.try(&.as_s?),
           duration: data["duration"]?.try { |dur| dur.as_f? || dur.as_i?.try(&.to_f) },
           segments: data["segments"]?.try(&.as_a?),
+          words: data["words"]?.try(&.as_a?),
           input_tokens: int_at(usage["input_tokens"]?) || int_at(usage["prompt_tokens"]?),
           output_tokens: int_at(usage["output_tokens"]?) || int_at(usage["completion_tokens"]?)
         )

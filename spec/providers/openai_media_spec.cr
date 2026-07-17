@@ -356,6 +356,35 @@ describe "CrystalLLM::Providers::OpenAI media" do
       t.text.should eq("just text")
       t.model.should eq("whisper-1")
     end
+
+    # Direct mirror of upstream's new open_ai/transcription_spec.rb "preserves
+    # word-level timestamp data from verbose transcription responses" example,
+    # added in ruby_llm 1.16.0 / a27cc36a.
+    it "preserves word-level timestamp data from verbose transcription responses" do
+      body = <<-JSON
+      {
+        "text": "Hello world",
+        "language": "english",
+        "duration": 1.0,
+        "segments": [{"id": 0, "text": "Hello world", "start": 0.0, "end": 1.0}],
+        "words": [
+          {"word": "Hello", "start": 0.0, "end": 0.5},
+          {"word": "world", "start": 0.6, "end": 1.0}
+        ],
+        "usage": {"input_tokens": 12, "output_tokens": 3}
+      }
+      JSON
+      t = configured_openai.parse_transcription_response(build_response(200, body), model: "whisper-1")
+      t.text.should eq("Hello world")
+      words = t.words
+      raise "no words" unless words
+      words.size.should eq(2)
+      words[0].as_h["word"].as_s.should eq("Hello")
+      words[1].as_h["word"].as_s.should eq("world")
+      t.segments.try(&.size).should eq(1)
+      t.input_tokens.should eq(12)
+      t.output_tokens.should eq(3)
+    end
   end
 
   describe "#build_audio_file_part" do

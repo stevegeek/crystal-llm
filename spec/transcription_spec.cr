@@ -19,6 +19,7 @@ describe CrystalLLM::Transcription do
     t.language.should be_nil
     t.duration.should be_nil
     t.segments.should be_nil
+    t.words.should be_nil
     t.input_tokens.should be_nil
     t.output_tokens.should be_nil
   end
@@ -35,6 +36,15 @@ describe CrystalLLM::Transcription do
     t.segments.try(&.first.["text"].as_s).should eq("hi")
     t.input_tokens.should eq(10)
     t.output_tokens.should eq(20)
+  end
+
+  # ruby_llm 1.16.0 / a27cc36a: Transcription gains a `words` accessor for
+  # word-level timestamp data (e.g. OpenAI's verbose_json transcription format).
+  it "carries word-level timestamp data when provided" do
+    words = [JSON.parse(%({"word": "hi", "start": 0.0, "end": 0.5}))]
+    t = CrystalLLM::Transcription.new(text: "hi", model: "whisper-1", words: words)
+    t.words.should eq(words)
+    t.words.try(&.first.["word"].as_s).should eq("hi")
   end
 end
 
