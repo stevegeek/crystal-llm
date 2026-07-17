@@ -901,6 +901,41 @@ describe CrystalLLM::Chat do
       # price and `total` is nil — but the aggregate is still produced.
       cost.tokens?.should be_true
     end
+
+    # ruby_llm e70d4ef8 (Fixes #773): a message that streamed without resolvable
+    # model info (no `model_id`, so `Message#model_info` is nil) falls back to the
+    # CHAT's model for pricing, instead of producing a nil cost. Mirrors
+    # `Cost.aggregate(messages.map { |m| m.cost(model: m.model_info || model) })`.
+    it "uses the chat model for cost when a message has no resolvable model info" do
+      priced_model = CrystalLLM::Model::Info.new(JSON.parse({
+        "id"       => "chat-cost-fallback-model",
+        "name"     => "Chat Cost Fallback Model",
+        "provider" => "chat_spec_fake",
+        "pricing"  => {
+          "text_tokens" => {
+            "standard" => {
+              "input_per_million"  => 1.0,
+              "output_per_million" => 2.0,
+            },
+          },
+        },
+      }.to_json).as_h)
+      unless CrystalLLM::Models.instance.all.any?(&.id.== "chat-cost-fallback-model")
+        CrystalLLM::Models.instance.all << priced_model
+      end
+
+      chat = CrystalLLM::Chat.new(model: "chat-cost-fallback-model", provider: "chat_spec_fake")
+      # Added directly (bypassing the provider), so `model_id` is nil and
+      # `model_info` cannot resolve — this is the "streamed without model info" case.
+      message = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: "Hi",
+        input_tokens: 1_000, output_tokens: 2_000)
+      message.model_info.should be_nil
+      chat.add_message(message)
+
+      cost = chat.cost.total
+      cost.should_not be_nil
+      cost.as(Float64).should be_close(0.005, 0.0000000001)
+    end
   end
 end
 

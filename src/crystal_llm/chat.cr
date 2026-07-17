@@ -41,7 +41,10 @@
 #   instance vars and deserialize via `T.from_json` (see the typed-hatch section).
 #
 # * Cost aggregation (`Chat#cost` → `Cost.aggregate`) is ported: `#cost` sums each
-#   message's cost via `Cost.aggregate` (see `#cost` below).
+#   message's cost via `Cost.aggregate` (see `#cost` below). Each message prices
+#   itself with `message.model_info || model` (ruby_llm `e70d4ef8`, fixes #773) —
+#   a message that streamed without resolvable model info falls back to the
+#   chat's own model for pricing instead of producing a nil cost.
 #
 # * `tool_prefs` (`:choice` / `:calls`): the per-call tool-choice preference and
 #   the tool-call *limit* are ported as Chat state AND forwarded to the provider —
@@ -649,9 +652,12 @@ module CrystalLLM
     end
 
     # Aggregate cost across all messages. Mirrors ruby_llm's
-    # `Cost.aggregate(messages.map(&:cost))`.
+    # `Cost.aggregate(messages.map { |message| message.cost(model: message.model_info || model) })`
+    # (ruby_llm e70d4ef8, fixes #773): a message that streamed without resolvable
+    # model info falls back to the chat's own model for pricing, instead of
+    # producing a nil cost.
     def cost : Cost
-      Cost.aggregate(@messages.map(&.cost.as(Cost?)))
+      Cost.aggregate(@messages.map { |message| message.cost(message.model_info || @model).as(Cost?) })
     end
 
     private def complete_once : Message | Tool::Halt
