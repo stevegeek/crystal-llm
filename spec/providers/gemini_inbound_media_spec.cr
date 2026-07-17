@@ -162,6 +162,45 @@ describe "CrystalLLM::Providers::Gemini inbound media" do
       result = configured_gemini_inbound.build_response_content(parts)
       result.should eq("only text")
     end
+
+    # Direct mirror of upstream's new gemini/media_spec.rb "#build_response_content
+    # parses inline image responses as content attachments" example, added in
+    # ruby_llm 1.16.0 / 9a08dd1c. That commit's actual Ruby bug was that
+    # `Gemini::Media#build_response_content` called `Content.new(text:, attachments:)`
+    # with KEYWORD args against a positional-only `initialize(text = nil,
+    # attachments = nil)` — Ruby silently folded both into a single Hash passed as
+    # the `text` positional param, so `@attachments` stayed empty and inline image
+    # bytes were dropped. This port's `build_response_content` never had that bug:
+    # it already builds `Content.new(text: text || "")` and pushes the decoded
+    # `Attachment` objects directly onto `content.attachments` (bypassing
+    # `add_attachment`/`process_attachments` entirely, see the divergence note
+    # above `build_response_content`). This spec verifies that already-correct
+    # persistence path rather than re-porting a fix that doesn't apply here.
+    it "parses a pure inline-image response (no text) as a Content with a named attachment" do
+      image_bytes = Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+      parts = [
+        JSON::Any.new({
+          "inlineData" => JSON::Any.new({
+            "mimeType" => JSON::Any.new("image/png"),
+            "data"     => JSON::Any.new(Base64.strict_encode(image_bytes)),
+          } of String => JSON::Any),
+        } of String => JSON::Any),
+      ]
+
+      result = configured_gemini_inbound.build_response_content(parts)
+      result.should be_a(CrystalLLM::Content)
+      content = result.as(CrystalLLM::Content)
+      content.text.should be_nil
+      content.attachments.size.should eq(1)
+
+      attachment = content.attachments.first
+      attachment.filename.should eq("gemini_attachment_1.png")
+      attachment.mime_type.should eq("image/png")
+      attachment.content.should eq(image_bytes)
+
+      message = CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: content)
+      message.content.should be_a(CrystalLLM::Content)
+    end
   end
 
   describe "parse_completion_response uses build_response_content" do

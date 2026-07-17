@@ -21,6 +21,22 @@ module CrystalLLM
       end
     end
 
+    # Overload for a pre-built `Attachment` array — a provider rebuilding a
+    # `Content` from already-decoded attachments (e.g. Gemini's inbound
+    # `build_response_content`, which decodes `inlineData`/`fileData` parts into
+    # `Attachment`s directly). Assigned as-is, bypassing `process_attachments`
+    # (there is nothing left to wrap/validate-as-Source). Mirrors ruby_llm's
+    # positional `Content.new(text, attachments)` call in gemini/media.rb (commit
+    # 9a08dd1c) — `Attachable` (the public `with:` argument type) intentionally
+    # doesn't include `Attachment`, so this narrower overload exists for the
+    # already-decoded-attachments case instead of widening the public type.
+    def initialize(@text : String?, attachments : Array(Attachment))
+      @attachments = attachments
+      if @text.nil? && @attachments.empty?
+        raise ArgumentError.new("Text and attachments cannot be both nil")
+      end
+    end
+
     # `source` may be a plain `Source` (String/Path/IO) or an existing `Attachment`
     # (ruby_llm 9a08dd1c) — reusing an already-loaded Attachment avoids re-reading
     # its bytes. See `build_attachment`.

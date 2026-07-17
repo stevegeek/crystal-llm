@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/media.rb @ ruby_llm 1.16.0
 #   (the inbound / response-side methods: build_response_content /
 #    build_inline_attachment / build_file_attachment / attachment_filename)
 #
@@ -17,7 +17,16 @@
 #   "txt" for "plain", `+` → `.` in sub-types (e.g. "svg+xml" → "svg.xml").
 # - `build_response_content` returns `String | Content | Nil`:
 #   - all-text parts → joined String (or nil when empty)
-#   - any inline/file attachment → `Content.new(text:, attachments:)`
+#   - any inline/file attachment → `Content.new(text, attachments)`, using the
+#     `Array(Attachment)` constructor overload (content.cr) so `text` stays nil
+#     for a pure-attachment response — matching ruby_llm's positional
+#     `Content.new(text, attachments)` call (ruby_llm 1.16.0 / 9a08dd1c: the
+#     Ruby bug fixed there was that the OLD keyword call `Content.new(text:,
+#     attachments:)` against a positional-only `initialize` silently folded both
+#     into a single Hash passed as `text`, dropping the attachments; not
+#     reproducible in Crystal's static typing, but the port previously had its
+#     own workaround-shaped divergence — see content.cr's `Array(Attachment)`
+#     overload comment).
 #   Mirrors ruby_llm's return type (`String | Content | nil`).
 require "json"
 require "base64"
@@ -39,11 +48,13 @@ module CrystalLLM
 
         return text if built_attachments.empty?
 
-        # Build a Content and push the pre-built Attachment objects directly
-        # (Attachment is not a Source, so we bypass Content#add_attachment).
-        content = Content.new(text: text || "")
-        built_attachments.each { |attachment| content.attachments << attachment }
-        content
+        # `Content.new(text, attachments)` — the `Array(Attachment)` overload
+        # (content.cr), matching ruby_llm's positional `Content.new(text,
+        # attachments)` in gemini/media.rb (commit 9a08dd1c). `text` stays nil
+        # for a pure-attachment response (no `|| ""` workaround needed: this
+        # overload assigns the already-built attachments directly, so the
+        # nil/nil validation only trips when both are genuinely absent).
+        Content.new(text, built_attachments)
       rescue ex
         CrystalLLM.logger.warn { "build_response_content failed: #{ex.message}" }
         nil
