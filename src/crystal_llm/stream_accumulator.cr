@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/stream_accumulator.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/stream_accumulator.rb @ ruby_llm 1.16.0
 require "json"
 require "uuid"
 require "./chunk"
@@ -27,6 +27,19 @@ module CrystalLLM
   # accumulated thinking; `to_message` attaches the result to the final Message.
   # The `<think>`-tag extraction over content text is a separate, parallel path
   # (used by providers that inline reasoning in the content stream).
+  #
+  # Index-keyed tool calls (ruby_llm 1.16.0 / ff19c933): a provider's
+  # `extract_tool_calls` returns `Hash(String, ToolCall)` keyed by its own
+  # "stream key" — usually the tool call's id, but Anthropic streams parallel
+  # tool calls as interleaved `content_block_start`/`content_block_delta`
+  # events distinguished only by an integer content-block `index` (see
+  # `providers/anthropic/streaming.cr#extract_tool_calls`, which stringifies
+  # the index so the hash stays single-keyed). `@tool_call_ids_by_index` maps
+  # such a stream key to the tool-call id it started, so a later fragment keyed
+  # by the same stream key is routed to the right buffer instead of clobbering
+  # whichever call happens to be `@latest_tool_call_id`. `stream_key == ""` is
+  # CrystalLLM's stand-in for ruby_llm's `nil` stream key (id-keyed providers
+  # with no index concept — see the empty-id-marks-continuation note below).
   class StreamAccumulator
     getter content : String
     getter model_id : String?
@@ -53,6 +66,7 @@ module CrystalLLM
       @latest_tool_call_id = nil
       @model_id = nil
       @tool_calls = {} of String => ToolCallBuffer
+      @tool_call_ids_by_index = {} of String => String
     end
 
     def add(chunk : Chunk) : Nil
@@ -101,27 +115,59 @@ module CrystalLLM
     end
 
     private def accumulate_tool_calls(new_tool_calls : Hash(String, ToolCall)) : Nil
-      new_tool_calls.each_value do |tool_call|
+      new_tool_calls.each do |stream_key, tool_call|
         # ruby_llm branches on `tool_call.id` being present vs nil. Crystal's
         # ToolCall#id is a non-nilable String, so an empty id marks a continuation
         # delta (the wire equivalent of ruby_llm's nil id).
         if !tool_call.id.empty?
-          tool_call_id = tool_call.id
-          buffer = ToolCallBuffer.new(
-            id: tool_call_id,
-            name: tool_call.name,
-            thought_signature: tool_call.thought_signature
-          )
-          ingest_arguments(buffer, tool_call)
-          @tool_calls[tool_call.id] = buffer
-          @latest_tool_call_id = tool_call.id
-        elsif (latest = @latest_tool_call_id) && (existing = @tool_calls[latest]?)
-          ingest_arguments(existing, tool_call)
-          if (sig = tool_call.thought_signature) && existing.thought_signature.nil?
-            existing.thought_signature = sig
-          end
+          start_tool_call(stream_key, tool_call)
+        else
+          append_tool_call_fragment(stream_key, tool_call)
         end
       end
+    end
+
+    # Registers a newly-started in-flight tool call under its own id. When
+    # `stream_key` differs from the id (Anthropic's stringified content-block
+    # index), remembers which tool-call id that stream key maps to, so a later
+    # fragment keyed by the same stream key lands on the right buffer even when
+    # two tool calls are streaming interleaved.
+    private def start_tool_call(stream_key : String, tool_call : ToolCall) : Nil
+      tool_call_id = tool_call.id
+      buffer = ToolCallBuffer.new(
+        id: tool_call_id,
+        name: tool_call.name,
+        thought_signature: tool_call.thought_signature
+      )
+      ingest_arguments(buffer, tool_call)
+      @tool_calls[tool_call_id] = buffer
+      @tool_call_ids_by_index[stream_key] = tool_call_id unless stream_key.empty?
+      @latest_tool_call_id = tool_call_id
+    end
+
+    private def append_tool_call_fragment(stream_key : String, tool_call : ToolCall) : Nil
+      existing = find_tool_call(stream_key)
+      return unless existing
+
+      ingest_arguments(existing, tool_call)
+      if (sig = tool_call.thought_signature) && existing.thought_signature.nil?
+        existing.thought_signature = sig
+      end
+    end
+
+    # Resolves a stream key to its in-flight tool-call buffer: the id recorded
+    # for this stream key (index-keyed providers) wins first, then a direct id
+    # match (id-keyed providers whose stream key already IS the id), then —
+    # for `stream_key == ""` (CrystalLLM's stand-in for ruby_llm's nil stream
+    # key) — whichever tool call started most recently.
+    private def find_tool_call(stream_key : String) : ToolCallBuffer?
+      if stream_key.empty?
+        latest = @latest_tool_call_id
+        return latest ? @tool_calls[latest]? : nil
+      end
+
+      by_index_id = @tool_call_ids_by_index[stream_key]?
+      (by_index_id ? @tool_calls[by_index_id]? : nil) || @tool_calls[stream_key]?
     end
 
     # Routes a delta's arguments into the buffer: a raw partial-JSON String

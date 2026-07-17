@@ -490,6 +490,35 @@ describe CrystalLLM::Providers::Anthropic do
       thinking.text.should eq("I will reason.")
       thinking.signature.should eq("sig-final")
     end
+
+    # REGRESSION (ruby_llm ff19c933): Anthropic streams parallel tool calls as
+    # interleaved content_block_start/content_block_delta events distinguished
+    # only by `index`. extract_tool_calls must key both the tool-call start and
+    # its argument-fragment deltas by the stringified index, so the
+    # StreamAccumulator can route interleaved fragments to the right call
+    # instead of clobbering `@latest_tool_call_id`.
+    it "keeps interleaved parallel tool calls separate via the content-block index" do
+      provider = configured_anthropic
+      accumulator = CrystalLLM::StreamAccumulator.new
+      events = [
+        %({"type":"content_block_start","index":0,"content_block":) +
+        %({"type":"tool_use","id":"tc_a","name":"alpha","input":{}}}),
+        %({"type":"content_block_start","index":1,"content_block":) +
+        %({"type":"tool_use","id":"tc_b","name":"beta","input":{}}}),
+        %({"type":"content_block_delta","index":0,) +
+        %("delta":{"type":"input_json_delta","partial_json":"{\\"x\\":"}}),
+        %({"type":"content_block_delta","index":1,) +
+        %("delta":{"type":"input_json_delta","partial_json":"{\\"y\\":1}"}}),
+        %({"type":"content_block_delta","index":0,) +
+        %("delta":{"type":"input_json_delta","partial_json":"1}"}}),
+      ]
+      events.each { |e| accumulator.add(provider.build_chunk(JSON.parse(e))) }
+
+      message = accumulator.to_message(nil)
+      tool_calls = message.tool_calls.should_not be_nil
+      tool_calls["tc_a"].arguments["x"].as_i.should eq(1)
+      tool_calls["tc_b"].arguments["y"].as_i.should eq(1)
+    end
   end
 
   describe "#parse_list_models_response" do

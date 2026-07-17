@@ -173,5 +173,43 @@ describe CrystalLLM::StreamAccumulator do
       tool_calls = accumulator.to_message(nil).tool_calls.should_not be_nil
       tool_calls["call_1"].arguments["city"].as_s.should eq("Paris")
     end
+
+    # REGRESSION (ruby_llm ff19c933): Anthropic streams parallel tool calls as
+    # interleaved content_block_start/content_block_delta events distinguished by
+    # a content-block `index`, stringified into the stream key (see
+    # anthropic/streaming.cr#extract_tool_calls). Before this fix, continuation
+    # fragments always routed through the single global `@latest_tool_call_id`,
+    # so interleaved fragments from two simultaneous tool calls landed on
+    # whichever call started most recently — clobbering the other.
+    it "keeps interleaved tool call fragments separate by stream key" do
+      accumulator = CrystalLLM::StreamAccumulator.new
+
+      # start(index "0", id "tc_a"), start(index "1", id "tc_b"),
+      # delta(index "0"), delta(index "1"), delta(index "0") — interleaved.
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"0" => CrystalLLM::ToolCall.new(id: "tc_a", name: "alpha")}
+      ))
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"1" => CrystalLLM::ToolCall.new(id: "tc_b", name: "beta")}
+      ))
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"0" => CrystalLLM::ToolCall.new(id: "", name: "", raw_arguments: %({"x":))}
+      ))
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"1" => CrystalLLM::ToolCall.new(id: "", name: "", raw_arguments: %({"y":1}))}
+      ))
+      accumulator.add(CrystalLLM::Chunk.new(
+        role: :assistant, content: nil,
+        tool_calls: {"0" => CrystalLLM::ToolCall.new(id: "", name: "", raw_arguments: "1}")}
+      ))
+
+      tool_calls = accumulator.to_message(nil).tool_calls.should_not be_nil
+      tool_calls["tc_a"].arguments["x"].as_i.should eq(1)
+      tool_calls["tc_b"].arguments["y"].as_i.should eq(1)
+    end
   end
 end
