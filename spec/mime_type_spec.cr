@@ -65,5 +65,14 @@ describe CrystalLLM::MimeType do
       webp = Bytes[0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]
       CrystalLLM::MimeType.for(webp).should eq("image/webp")
     end
+
+    # ruby_llm 1.16.0 / 329cfe4f: Bedrock/Perplexity's "keeps text file formats as
+    # text blocks" specs attach a `.md` file and expect it to classify as text.
+    # Crystal's stdlib `MIME` DB (unlike upstream's marcel) doesn't map ".md", so
+    # this port needs its own small extension fallback for markdown to match.
+    it "falls back to text/markdown for a .md filename stdlib MIME doesn't know" do
+      CrystalLLM::MimeType.for(name: "notes.md").should eq("text/markdown")
+      CrystalLLM::MimeType.text?(CrystalLLM::MimeType.for(name: "notes.md")).should be_true
+    end
   end
 end

@@ -89,5 +89,24 @@ describe "CrystalLLM::Providers::Perplexity::Media" do
       doc = parts[1].as_h
       doc["type"].as_s.should eq("file_url")
     end
+
+    # Direct mirror of upstream's rewritten open_ai/chat_spec.rb "keeps Perplexity
+    # text file attachments as text parts" example, added in ruby_llm 1.16.0 /
+    # 329cfe4f "Keep text attachments as text". Text-typed attachments (txt is also
+    # in SUPPORTED_DOCUMENT_EXTENSIONS) used to be promoted to a file_url part via
+    # format_document; format_text_attachment now always uses OpenAI::Media.
+    # format_text_file instead, for every text extension (not just txt).
+    it "keeps text file attachments as text parts (not promoted to file_url)" do
+      %w[csv txt md html json].each do |extension|
+        io = IO::Memory.new("notes".to_slice)
+        io.rewind
+        attachment = CrystalLLM::Attachment.new(io, filename: "notes.#{extension}")
+        attachment.type.should eq(:text)
+
+        part = CrystalLLM::Providers::Perplexity::Media.format_text_attachment(attachment).as_h
+        part["type"].as_s.should eq("text")
+        part["text"].as_s.should eq(attachment.for_llm)
+      end
+    end
   end
 end

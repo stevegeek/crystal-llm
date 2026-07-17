@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/mime_type.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/mime_type.rb @ ruby_llm 1.16.0
 require "mime"
 
 module CrystalLLM
@@ -8,6 +8,16 @@ module CrystalLLM
   module MimeType
     extend self
 
+    # Extensions marcel (upstream's mime detector) knows but Crystal's stdlib
+    # `MIME` DB doesn't. Discovered porting ruby_llm 1.16.0 / 329cfe4f ("keep text
+    # attachments as text"), whose Bedrock/Perplexity specs attach a `.md` file and
+    # expect it to classify as text; `::MIME.from_filename?("x.md")` returns nil,
+    # so without this fallback a markdown attachment resolves to `:unknown` and is
+    # rejected by every provider instead of being treated as text.
+    EXTENSION_FALLBACKS = {
+      "md" => "text/markdown",
+    }
+
     def for(bytes : Bytes? = nil, name : String? = nil, declared_type : String? = nil) : String
       if bytes && (sniffed = sniff(bytes))
         return sniffed
@@ -15,7 +25,16 @@ module CrystalLLM
       if name && (from_name = ::MIME.from_filename?(name))
         return from_name
       end
+      if name && (fallback = EXTENSION_FALLBACKS[extension(name)]?)
+        return fallback
+      end
       declared_type || "application/octet-stream"
+    end
+
+    # The lowercased extension (without the leading dot), or "" when absent.
+    private def extension(name : String) : String
+      ext = ::File.extname(name)
+      ext.empty? ? "" : ext[1..].downcase
     end
 
     def image?(type : String) : Bool

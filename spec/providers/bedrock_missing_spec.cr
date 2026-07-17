@@ -117,20 +117,26 @@ describe CrystalLLM::Providers::Bedrock::Media do
       doc["source"].as_h["bytes"].as_s.should eq(Base64.strict_encode(bytes))
     end
 
-    it "renders a .txt attachment as a Bedrock document block with format 'txt'" do
-      bytes = "plain text notes"
-      attachment = mem_attachment("notes.txt", bytes)
+    # ruby_llm 1.16.0 / 329cfe4f "Keep text attachments as text": text-typed
+    # attachments (csv/txt/md/html/json — text? == true) used to be promoted to a
+    # Bedrock `document` block when their extension ALSO happened to be a
+    # supported document format; render_text_attachment now always renders text
+    # attachments as an inline `{text: ...}` block instead. Direct mirror of
+    # upstream's rewritten bedrock/media_spec.rb "keeps text file formats as text
+    # blocks" example (which iterates the same extension list).
+    it "keeps text file formats as text blocks (not promoted to a document block)" do
+      %w[csv txt md html json].each do |extension|
+        bytes = "plain text notes"
+        attachment = mem_attachment("notes.#{extension}", bytes)
+        attachment.type.should eq(:text)
 
-      # txt is text? == true, but also a supported document format —
-      # render_text_attachment routes it through render_document_attachment.
-      used = {} of String => Int32
-      block = CrystalLLM::Providers::Bedrock::Media.render_attachment(attachment, used).as_h
+        used = {} of String => Int32
+        block = CrystalLLM::Providers::Bedrock::Media.render_attachment(attachment, used).as_h
 
-      block.has_key?("document").should be_true
-      doc = block["document"].as_h
-      doc["format"].as_s.should eq("txt")
-      doc["name"].as_s.should eq("notes")
-      doc["source"].as_h["bytes"].as_s.should eq(Base64.strict_encode(bytes))
+        block.has_key?("text").should be_true
+        block.has_key?("document").should be_false
+        block["text"].as_s.should eq(attachment.for_llm)
+      end
     end
 
     it "raises UnsupportedAttachmentError for .pptx (unsupported format)" do

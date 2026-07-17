@@ -12,21 +12,23 @@
 # DEFERRED (per task scope — CHAT path only):
 # - Embeddings / image / moderation / transcription provider methods: Perplexity
 #   inherits none of those from OpenAI's deferred set; nothing extra to port.
-# - Attachment media formatting (perplexity/media.rb — format_document / file_url
-#   parts / SUPPORTED_DOCUMENT_EXTENSIONS / format_text_attachment): DEFERRED with
-#   the attachment-provider work, exactly as OpenAI's media.cr defers its rich
-#   attachment paths. A Content carrying attachments raises the inherited
-#   "deferred" error rather than silently dropping them. The text/Raw/Hash content
-#   paths chat needs are inherited from OpenAI::Media.
+#
+# NOTE: this comment previously claimed attachment media formatting
+# (perplexity/media.rb) was deferred; it is not — see perplexity/media.cr, which
+# fully ports format_document / file_url parts / SUPPORTED_DOCUMENT_EXTENSIONS /
+# format_text_attachment (including the ruby_llm 1.16.0 / 329cfe4f "keep text
+# attachments as text" fix).
 #
 # Divergences:
 # - format_messages: ruby_llm's Perplexity::Chat#format_messages re-implements the
 #   OpenAI message map only to splice in `format_content` (its media variant) plus
-#   `OpenAI::Chat.format_thinking`. Message#thinking and rich attachment formatting
-#   are BOTH deferred in this port (see message.cr / openai/media.cr), so the
-#   re-implementation would be byte-identical to the inherited OpenAI#format_messages
-#   for the in-scope (text) path. We therefore inherit OpenAI#format_messages rather
-#   than copy it — same wire output, less drift. Documented + returned as a divergence.
+#   `OpenAI::Chat.format_thinking`. In this port both pieces are already covered by
+#   inheritance: `format_content` is a normal virtual method Perplexity overrides
+#   (perplexity/media.cr), and `format_thinking` lives once in openai/chat.cr and
+#   is called by the inherited `format_messages` — so re-implementing
+#   `format_messages` here would be byte-identical to the inherited
+#   OpenAI#format_messages. We therefore inherit it rather than copy it — same
+#   wire output, less drift. Documented + returned as a divergence.
 # - format_role: ruby_llm's Perplexity::Chat#format_role is `role.to_s` (no
 #   system->developer remap; Perplexity has no developer role). Overridden here to
 #   the plain downcased role string (OpenAI's remap keys off openai_use_system_role,

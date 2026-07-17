@@ -1,10 +1,13 @@
-# ported from lib/ruby_llm/providers/perplexity/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/perplexity/media.rb @ ruby_llm 1.16.0
 #
 # Perplexity (Sonar) media formatting. Perplexity is OpenAI-compatible for chat,
 # but extends the content-part vocabulary with a `file_url` part type for supported
 # document attachments (PDF, doc, docx, txt, rtf). Image parts delegate to
-# OpenAI::Media. Text-file attachments that match the supported-document list route
-# to `format_document`; others fall back to OpenAI::Media.format_text_file.
+# OpenAI::Media. Text-file attachments (attachment.type == :text) always format as
+# an inline text_file part — they never route to `format_document`, even when the
+# extension also matches SUPPORTED_DOCUMENT_EXTENSIONS (ruby_llm 1.16.0 /
+# 329cfe4f "Keep text attachments as text"). `format_document` is reached only for
+# :pdf/:document-typed attachments.
 #
 # Divergences from ruby_llm:
 # - Ruby's `format_content` returns String | Array; Crystal uses JSON::Any.
@@ -56,14 +59,13 @@ module CrystalLLM
           } of String => JSON::Any)
         end
 
-        # Routes a text-file attachment: if it matches the supported-document list,
-        # format as a document (file_url); otherwise fall back to text_file inline.
+        # A text-file attachment always formats as an inline text_file part.
+        # ruby_llm 1.16.0 / 329cfe4f "Keep text attachments as text": previously
+        # routed through `format_document` (a `file_url` part) when the file's
+        # extension also matched SUPPORTED_DOCUMENT_EXTENSIONS (txt); text
+        # attachments now stay text regardless.
         def format_text_attachment(attachment : Attachment) : JSON::Any
-          if supported_file?(attachment)
-            format_document(attachment)
-          else
-            OpenAI::Media.format_text_file(attachment)
-          end
+          OpenAI::Media.format_text_file(attachment)
         end
 
         # True if the attachment is a PDF or has a SUPPORTED_DOCUMENT_EXTENSIONS extension.

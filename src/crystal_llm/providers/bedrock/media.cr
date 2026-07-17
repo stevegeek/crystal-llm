@@ -1,11 +1,11 @@
-# ported from lib/ruby_llm/providers/bedrock/media.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/bedrock/media.rb @ ruby_llm 1.16.0
 #
 # Media formatting for Bedrock Converse content blocks. A single attachment becomes
 # one Converse content block:
 #   image          -> {image:    {format, source: {bytes: base64}}}
 #   pdf / document  -> {document: {format, name, source: {bytes: base64}}}
-#   text            -> {text: <file ...>}  (or a document block when the text file's
-#                       extension/format is a supported document format)
+#   text            -> {text: <file ...>}  (always text, even when the extension also
+#                       matches a supported document format — ruby_llm 1.16.0 / 329cfe4f)
 #   anything else   -> raises UnsupportedAttachmentError
 #
 # Document blocks carry a `name`; Bedrock requires those names to be unique within a
@@ -45,7 +45,7 @@ module CrystalLLM
           when :pdf, :document
             render_document_attachment(attachment, used_document_names)
           when :text
-            render_text_attachment(attachment, used_document_names)
+            render_text_attachment(attachment)
           else
             raise UnsupportedAttachmentError.new(attachment.mime_type)
           end
@@ -63,14 +63,11 @@ module CrystalLLM
           } of String => JSON::Any)
         end
 
-        # A text-file attachment: a document block when its format is a supported
-        # Bedrock document format, otherwise an inline `{text: <file ...>}` block.
-        def render_text_attachment(attachment : Attachment,
-                                   used_document_names : Hash(String, Int32)) : JSON::Any
-          if supported_document_format?(attachment)
-            return render_document_attachment(attachment, used_document_names)
-          end
-
+        # A text-file attachment always renders as an inline `{text: <file ...>}`
+        # block. ruby_llm 1.16.0 / 329cfe4f: previously promoted to a `document`
+        # block when the file's extension/format happened to also be a supported
+        # Bedrock document format (csv/html/txt/md); text attachments now stay text.
+        def render_text_attachment(attachment : Attachment) : JSON::Any
           JSON::Any.new({"text" => JSON::Any.new(attachment.for_llm)} of String => JSON::Any)
         end
 
