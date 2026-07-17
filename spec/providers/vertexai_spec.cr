@@ -312,7 +312,12 @@ describe CrystalLLM::Providers::VertexAI do
   end
 
   describe "#format_messages" do
-    it "collapses consecutive tool results into a single function entry" do
+    # ruby_llm 1.16.0 / 854342e3 (Fixes #678): Gemini's generateContent spec only
+    # accepts "user"/"model" content roles; collapsed tool results now use
+    # `role: "user"` instead of the invalid historical `role: "function"`.
+    # Upstream VertexAI < Gemini inherits this fix automatically; the port's
+    # VertexAI duplicates Gemini::Chat (vertexai/chat.cr), so it's fixed there too.
+    it "collapses consecutive tool results into a single user-role entry" do
       provider = configured_vertexai
       calls = {"call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: "get_weather")}
       messages = [
@@ -329,11 +334,37 @@ describe CrystalLLM::Providers::VertexAI do
       fc = assistant["parts"].as_a[0].as_h["functionCall"].as_h
       fc["name"].as_s.should eq("get_weather")
 
-      # tool result -> function role with functionResponse, named from the remembered call
+      # tool result -> user role with functionResponse, named from the remembered call
       tool_entry = formatted[2].as_h
-      tool_entry["role"].as_s.should eq("function")
+      tool_entry["role"].as_s.should eq("user")
       fr = tool_entry["parts"].as_a[0].as_h["functionResponse"].as_h
       fr["name"].as_s.should eq("get_weather")
+    end
+
+    # Direct mirror of upstream's new vertex_ai_spec.rb '#render_payload' example
+    # ("formats tool responses with a Vertex AI content role") added in 854342e3.
+    it "formats tool responses with a Vertex AI content role via render_payload" do
+      provider = configured_vertexai
+      messages = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::User, content: "What is the weather?"),
+        CrystalLLM::Message.new(
+          role: CrystalLLM::Role::Assistant,
+          content: "",
+          tool_calls: {"call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: "weather", arguments: {} of String => JSON::Any)}
+        ),
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Tool, content: "Sunny", tool_call_id: "call_1"),
+      ]
+
+      payload = provider.render_payload(
+        messages,
+        tools: {} of String => CrystalLLM::Tool,
+        temperature: nil,
+        model: gemini_model
+      )
+
+      contents = payload["contents"].as_a
+      contents[2].as_h["role"].as_s.should eq("user")
+      contents[2].as_h["parts"].as_a[0].as_h["functionResponse"].as_h["name"].as_s.should eq("weather")
     end
   end
 

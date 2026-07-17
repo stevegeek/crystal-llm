@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/gemini/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/gemini/chat.rb @ ruby_llm 1.16.0
 #
 # The Gemini generateContent request/response surface. Gemini's payload is
 # `{contents: [...], generationConfig: {...}, tools: [...], toolConfig: {...}}` —
@@ -205,18 +205,20 @@ module CrystalLLM
       # ---- message formatting ----
 
       # Gemini `contents`: one entry per message, with consecutive `tool` (function)
-      # results collapsed into a single `{role: "function", parts: [...]}` entry.
-      # Ported from chat.rb's MessageFormatter.
+      # results collapsed into a single `{role: "user", parts: [...]}` entry.
+      # Ported from chat.rb's MessageFormatter. `role: "user"` (not the historical
+      # `"function"`) per ruby_llm 1.16.0 / 854342e3 (Fixes #678): Gemini's actual
+      # generateContent spec only accepts "user"/"model" content roles, and `system`
+      # is also folded into "user" (Gemini has no separate system-turn role either).
       def format_messages(messages : Array(Message)) : Array(JSON::Any)
         MessageFormatter.new(self, messages).format
       end
 
       def format_role(role : Role) : String
         case role
-        when .assistant? then "model"
-        when .system?    then "user"
-        when .tool?      then "function"
-        else                  role.to_s.downcase
+        when .assistant?      then "model"
+        when .system?, .tool? then "user"
+        else                       role.to_s.downcase
         end
       end
 
@@ -285,7 +287,7 @@ module CrystalLLM
 
         private def build_tool_response(parts : Array(JSON::Any)) : JSON::Any
           JSON::Any.new({
-            "role"  => JSON::Any.new("function"),
+            "role"  => JSON::Any.new("user"),
             "parts" => JSON::Any.new(parts),
           } of String => JSON::Any)
         end

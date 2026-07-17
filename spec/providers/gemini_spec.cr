@@ -386,7 +386,10 @@ describe CrystalLLM::Providers::Gemini do
   end
 
   describe "#format_messages (tool grouping)" do
-    it "collapses consecutive tool results into one function content entry" do
+    # ruby_llm 1.16.0 / 854342e3 (Fixes #678): Gemini's generateContent spec only
+    # accepts "user"/"model" content roles; the historical `role: "function"` for
+    # collapsed tool results was never valid Gemini API shape.
+    it "collapses consecutive tool results into one user-role content entry" do
       provider = configured_gemini
       calls = {
         "call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: "get_weather"),
@@ -401,9 +404,9 @@ describe CrystalLLM::Providers::Gemini do
       contents = provider.format_messages(messages)
       contents.size.should eq(3)
 
-      function_entry = contents[2].as_h
-      function_entry["role"].as_s.should eq("function")
-      parts = function_entry["parts"].as_a
+      tool_response_entry = contents[2].as_h
+      tool_response_entry["role"].as_s.should eq("user")
+      parts = tool_response_entry["parts"].as_a
       parts.size.should eq(2)
       parts[0].as_h["functionResponse"].as_h["name"].as_s.should eq("get_weather")
       parts[1].as_h["functionResponse"].as_h["name"].as_s.should eq("get_time")

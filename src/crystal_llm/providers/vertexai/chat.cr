@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/vertexai/chat.rb + lib/ruby_llm/providers/gemini/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/vertexai/chat.rb + lib/ruby_llm/providers/gemini/chat.rb @ ruby_llm 1.16.0
 #
 # The Vertex AI / Gemini chat request/response surface.
 #
@@ -101,8 +101,13 @@ module CrystalLLM
       # ---- Message formatting (the Gemini MessageFormatter) ----
 
       # Formats CrystalLLM messages into Gemini `{role, parts}` entries, collapsing
-      # consecutive tool-result messages into a single `function` entry (the
-      # MessageFormatter behavior in gemini/chat.rb).
+      # consecutive tool-result messages into a single `{role: "user", parts}` entry
+      # (the MessageFormatter behavior in gemini/chat.rb). `role: "user"` (not the
+      # historical `"function"`) per ruby_llm 1.16.0 / 854342e3 (Fixes #678): upstream
+      # VertexAI < Gemini so it inherited the fix automatically; this port's VertexAI
+      # duplicates Gemini::Chat (own `class VertexAI < Provider`, not a Gemini
+      # subclass — a pre-existing organizational divergence), so the same fix is
+      # applied here directly.
       def format_messages(messages : Array(Message)) : Array(JSON::Any)
         formatted = [] of JSON::Any
         # tool_call_id => tool name, remembered from a preceding assistant tool_call.
@@ -120,7 +125,7 @@ module CrystalLLM
               index += 1
             end
             formatted << JSON::Any.new({
-              "role"  => JSON::Any.new("function"),
+              "role"  => JSON::Any.new("user"),
               "parts" => JSON::Any.new(parts),
             } of String => JSON::Any)
           else
@@ -142,10 +147,9 @@ module CrystalLLM
 
       def format_role(role : Role) : String
         case role
-        when .assistant? then "model"
-        when .system?    then "user"
-        when .tool?      then "function"
-        else                  role.to_s.downcase
+        when .assistant?      then "model"
+        when .system?, .tool? then "user"
+        else                       role.to_s.downcase
         end
       end
 
