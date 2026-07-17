@@ -1,8 +1,9 @@
-# ported from lib/ruby_llm/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/models.rb @ ruby_llm 1.16.0
 require "json"
 require "crest"
 require "./error"
 require "./model/info"
+require "./utils"
 
 module CrystalLLM
   # Manages model aliases for provider-specific versions.
@@ -97,7 +98,21 @@ module CrystalLLM
       "mistral"        => "mistral",
       "openrouter"     => "openrouter",
       "perplexity"     => "perplexity",
+      "xai"            => "xai",
     }
+
+    # models.dev-allowed modality vocab (ruby_llm 3f27b864). Any value outside
+    # these sets is dropped by `normalize_models_dev_modalities` — models.dev is
+    # the authority on which modality tags exist.
+    MODELS_DEV_INPUT_MODALITIES  = %w[text image audio pdf video file]
+    MODELS_DEV_OUTPUT_MODALITIES = %w[text image audio video embeddings moderation]
+
+    # Capabilities models.dev is the authority for (ruby_llm 3f27b864). When
+    # merging provider + models.dev data in `add_provider_metadata`, a provider's
+    # OWN claim to one of these is dropped unless models.dev also grants it —
+    # only non-authority provider capabilities (e.g. "streaming", "batch") pass
+    # through unconditionally.
+    MODELS_DEV_AUTHORITY_CAPABILITIES = %w[function_calling structured_output reasoning vision]
 
     PROVIDER_PREFERENCE = %w[
       openai
@@ -442,8 +457,13 @@ module CrystalLLM
       models_dev_model.metadata.each { |key, val| merged_meta[key] = val }
       data["metadata"] = JSON::Any.new(merged_meta)
 
-      # Capabilities: union (models.dev + provider).
-      combined_caps = (models_dev_model.capabilities + provider_model.capabilities).uniq
+      # Capabilities: union (models.dev + provider), but a provider's OWN claim
+      # to an "authority" capability (function_calling/structured_output/
+      # reasoning/vision) is dropped unless models.dev also grants it — models.dev
+      # is the source of truth for those; only non-authority provider
+      # capabilities (streaming, batch, citations, ...) pass through unconditionally.
+      provider_capabilities = provider_model.capabilities - MODELS_DEV_AUTHORITY_CAPABILITIES
+      combined_caps = (models_dev_model.capabilities + provider_capabilities).uniq
       data["capabilities"] = JSON::Any.new(combined_caps.map { |cap| JSON::Any.new(cap) })
 
       # Re-normalize embedding modalities.
@@ -777,10 +797,6 @@ module CrystalLLM
       modalities = normalize_models_dev_modalities(data["modalities"]?)
       capabilities = models_dev_capabilities(data, modalities)
 
-      created_date = [data["release_date"]?, data["last_updated"]?]
-        .compact_map { |value| json_string(value) }
-        .find { |value| !value.strip.empty? }
-
       built = {} of String => JSON::Any
       built["id"] = JSON::Any.new(id) if id
       built["name"] = JSON::Any.new(name) if name
@@ -788,8 +804,8 @@ module CrystalLLM
       if family = json_string(data["family"]?)
         built["family"] = JSON::Any.new(family)
       end
-      if created_date
-        built["created_at"] = JSON::Any.new("#{created_date} 00:00:00 UTC")
+      if created_at = models_dev_created_at(data)
+        built["created_at"] = created_at
       end
       if limit
         if ctx = json_int(limit["context"]?)
@@ -812,12 +828,28 @@ module CrystalLLM
       Model::Info.new(built)
     end
 
-    # ruby_llm `models_dev_capabilities`.
+    # ruby_llm: `created_date = [model_data[:release_date], model_data[:last_updated]].find { |value| !value.to_s.strip.empty? }`,
+    # then `created_at: Utils.iso_date_prefix_to_utc_midnight_string(created_date)`
+    # (ruby_llm 48f851db). release_date wins over last_updated; models.dev dates
+    # arrive as date-prefixes (YYYY-MM-DD, YYYY-MM, or YYYY), not just full dates.
+    def self.models_dev_created_at(data : Hash(String, JSON::Any)) : JSON::Any?
+      created_date = [data["release_date"]?, data["last_updated"]?]
+        .compact_map { |value| json_string(value) }
+        .find { |value| !value.strip.empty? }
+      return nil unless created_date
+
+      normalized = Utils.iso_date_prefix_to_utc_midnight_string(created_date)
+      normalized ? JSON::Any.new(normalized) : nil
+    end
+
+    # ruby_llm `models_dev_capabilities`. ruby_llm 3f27b864: a model is also
+    # "reasoning" when it carries `reasoning_options` even if the `reasoning`
+    # flag itself is false/absent (e.g. Claude's budget_tokens-only models).
     def self.models_dev_capabilities(data : Hash(String, JSON::Any), modalities : Hash(String, Array(String))) : Array(String)
       capabilities = [] of String
       capabilities << "function_calling" if json_truthy(data["tool_call"]?)
       capabilities << "structured_output" if json_truthy(data["structured_output"]?)
-      capabilities << "reasoning" if json_truthy(data["reasoning"]?)
+      capabilities << "reasoning" if json_truthy(data["reasoning"]?) || json_truthy(data["reasoning_options"]?)
       input = modalities["input"]? || [] of String
       capabilities << "vision" if input.any? { |mod| {"image", "video", "pdf"}.includes?(mod) }
       capabilities.uniq
@@ -852,25 +884,34 @@ module CrystalLLM
     end
 
     # ruby_llm `models_dev_metadata` — the `.compact` drops nil values.
+    # ruby_llm 3f27b864 adds `reasoning_options` to this passthrough list; Info's
+    # `store_reasoning_options_metadata` (Task 6) is what actually normalizes it
+    # once it lands in `Info#metadata`.
     def self.models_dev_metadata(data : Hash(String, JSON::Any), provider_key : String) : JSON::Any
       metadata = {} of String => JSON::Any
       metadata["source"] = JSON::Any.new("models.dev")
       metadata["provider_id"] = JSON::Any.new(provider_key)
-      %w[open_weights attachment temperature last_updated status interleaved cost limit knowledge].each do |key|
+      %w[
+        open_weights attachment temperature last_updated status interleaved
+        reasoning_options cost limit knowledge
+      ].each do |key|
         value = data[key]?
         metadata[key] = value if value && !value.raw.nil?
       end
       JSON::Any.new(metadata)
     end
 
-    # ruby_llm `normalize_models_dev_modalities` — Array(...).compact for each side.
+    # ruby_llm `normalize_models_dev_modalities` — Array(...).compact for each
+    # side, intersected with the models.dev-allowed vocab (ruby_llm 3f27b864:
+    # `& MODELS_DEV_INPUT_MODALITIES` / `& MODELS_DEV_OUTPUT_MODALITIES`). Crystal's
+    # `Array#&` matches Ruby's: intersection, deduplicated, receiver's order.
     def self.normalize_models_dev_modalities(modalities_any : JSON::Any?) : Hash(String, Array(String))
       normalized = {"input" => [] of String, "output" => [] of String}
       obj = modalities_any.try(&.as_h?)
       return normalized unless obj
 
-      normalized["input"] = json_string_array(obj["input"]?)
-      normalized["output"] = json_string_array(obj["output"]?)
+      normalized["input"] = json_string_array(obj["input"]?) & MODELS_DEV_INPUT_MODALITIES
+      normalized["output"] = json_string_array(obj["output"]?) & MODELS_DEV_OUTPUT_MODALITIES
       normalized
     end
 

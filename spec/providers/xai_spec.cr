@@ -163,13 +163,18 @@ describe CrystalLLM::Providers::XAI do
     end
   end
 
+  # ruby_llm 3f27b864 (Integrate models.dev metadata and provider cleanup):
+  # xAI list_models classification stopped hard-coding vision/reasoning model-id
+  # lists — those are now models.dev's job (xai joined MODELS_DEV_PROVIDER_MAP).
+  # The live list_models parse only self-classifies image/video-generation
+  # models by id pattern; every other (chat) model gets a bare ["streaming"]
+  # fallback capability.
   describe "#parse_list_models_response" do
-    it "classifies grok models with family/modalities/capabilities" do
+    it "classifies grok chat models with family + a bare 'streaming' fallback capability" do
       body = <<-JSON
       {
         "data": [
           {"id": "grok-4-0709", "object": "model", "created": 1700000000, "owned_by": "xai"},
-          {"id": "grok-2-image-1212", "object": "model", "owned_by": "xai"},
           {"id": "grok-3-mini", "object": "model"}
         ]
       }
@@ -179,26 +184,83 @@ describe CrystalLLM::Providers::XAI do
         build_response(200, body), "xai", CrystalLLM::Providers::XAI.capabilities
       )
 
-      models.size.should eq(3)
+      models.size.should eq(2)
 
-      vision = models[0]
-      vision.id.should eq("grok-4-0709")
-      vision.name.should eq("Grok 4 0709")
-      vision.family.should eq("grok")
-      vision.modalities.input.should contain("image")
-      vision.capabilities.should contain("vision")
-      vision.capabilities.should contain("reasoning")
-      vision.capabilities.should contain("function_calling")
+      reasoning_model = models[0]
+      reasoning_model.id.should eq("grok-4-0709")
+      reasoning_model.name.should eq("Grok 4 0709")
+      reasoning_model.family.should eq("grok")
+      reasoning_model.modalities.input.should eq(["text"])
+      reasoning_model.modalities.output.should eq(["text"])
+      reasoning_model.capabilities.should eq(["streaming"])
 
-      image = models[1]
+      non_reasoning_model = models[1]
+      non_reasoning_model.id.should eq("grok-3-mini")
+      non_reasoning_model.capabilities.should eq(["streaming"])
+    end
+
+    it "marks grok-2-image-1212 (legacy id) as an image model: vision capability, image in both modalities" do
+      body = %({"data": [{"id": "grok-2-image-1212", "object": "model", "owned_by": "xai"}]})
+      provider = configured_xai
+      models = provider.parse_list_models_response(
+        build_response(200, body), "xai", CrystalLLM::Providers::XAI.capabilities
+      )
+
+      image = models.first
       image.id.should eq("grok-2-image-1212")
+      image.modalities.input.should eq(["text", "image"])
       image.modalities.output.should eq(["image"])
-      image.capabilities.should be_empty
+      image.capabilities.should eq(["vision"])
+    end
 
-      mini = models[2]
-      mini.id.should eq("grok-3-mini")
-      mini.capabilities.should contain("reasoning")
-      mini.modalities.input.should eq(["text"])
+    it "marks grok-imagine-image/-video models using modality id patterns" do
+      body = <<-JSON
+      {
+        "data": [
+          {"id": "grok-imagine-image", "object": "model", "owned_by": "xai"},
+          {"id": "grok-imagine-video", "object": "model", "owned_by": "xai"},
+          {"id": "grok-2-imagine-image", "object": "model", "owned_by": "xai"},
+          {"id": "grok-2-imagine-video", "object": "model", "owned_by": "xai"}
+        ]
+      }
+      JSON
+      provider = configured_xai
+      models = provider.parse_list_models_response(
+        build_response(200, body), "xai", CrystalLLM::Providers::XAI.capabilities
+      )
+
+      image_model = models.find! { |info| info.id == "grok-imagine-image" }
+      image_model.modalities.input.should eq(["text", "image"])
+      image_model.modalities.output.should eq(["image"])
+      image_model.capabilities.should eq(["vision"])
+
+      video_model = models.find! { |info| info.id == "grok-imagine-video" }
+      video_model.modalities.input.should eq(["text", "image", "video"])
+      video_model.modalities.output.should eq(["video"])
+      video_model.capabilities.should eq(["vision"])
+
+      models.find! { |info| info.id == "grok-2-imagine-image" }.capabilities.should eq(["vision"])
+      models.find! { |info| info.id == "grok-2-imagine-video" }.capabilities.should eq(["vision"])
+    end
+  end
+
+  describe "#image_model? / #video_model?" do
+    it "matches the legacy grok-2-image-1212 id and grok-(2-)imagine-image ids" do
+      provider = configured_xai
+      provider.image_model?("grok-2-image-1212").should be_true
+      provider.image_model?("grok-imagine-image").should be_true
+      provider.image_model?("grok-2-imagine-image").should be_true
+      provider.image_model?("grok-imagine-image-pro").should be_true
+      provider.image_model?("grok-4-0709").should be_false
+      provider.image_model?("grok-imagine-video").should be_false
+    end
+
+    it "matches grok-(2-)imagine-video ids only" do
+      provider = configured_xai
+      provider.video_model?("grok-imagine-video").should be_true
+      provider.video_model?("grok-2-imagine-video").should be_true
+      provider.video_model?("grok-2-image-1212").should be_false
+      provider.video_model?("grok-imagine-image").should be_false
     end
   end
 

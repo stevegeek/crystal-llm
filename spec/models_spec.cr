@@ -319,6 +319,56 @@ module CrystalLLM
       ensure
         Models.reset!
       end
+
+      # ruby_llm 48f851db: models.dev dates arrive as date-prefixes (YYYY-MM-DD,
+      # YYYY-MM, or YYYY), not just full dates. created_at now normalizes them via
+      # Utils.iso_date_prefix_to_utc_midnight_string (Task 1) instead of a bare
+      # "#{date} 00:00:00 UTC" string concat, which would leave a YYYY-MM/YYYY
+      # value unparseable by Info.to_time.
+      it "normalizes YYYY-MM and YYYY-only models.dev dates to a UTC midnight Time" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
+        Models.refresh!
+
+        # release_date "2025-06" (YYYY-MM) -> first of the month
+        month_only = Models.find("gpt-reasoning-options-test", "openai")
+        month_only.created_at.try(&.to_s("%Y-%m-%d")).should eq("2025-06-01")
+
+        # release_date "2023" (YYYY) -> Jan 1st
+        year_only = Models.find("gpt-year-only-date-test", "openai")
+        year_only.created_at.try(&.to_s("%Y-%m-%d")).should eq("2023-01-01")
+      ensure
+        Models.reset!
+      end
+
+      # ruby_llm 3f27b864: `reasoning` capability is granted when EITHER the
+      # `reasoning` flag OR `reasoning_options` is present; reasoning_options
+      # round-trips into metadata and is queryable via Model::Info#reasoning_option*.
+      it "derives reasoning from reasoning_options even when the reasoning flag is false" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
+        Models.refresh!
+
+        model = Models.find("gpt-reasoning-options-test", "openai")
+        model.reasoning?.should be_true
+        model.reasoning_option_values("effort").should eq(["low", "medium", "high"])
+        model.metadata["reasoning_options"]?.should_not be_nil
+      ensure
+        Models.reset!
+      end
+
+      # ruby_llm 3f27b864: xai joins MODELS_DEV_PROVIDER_MAP (was previously
+      # provider-only, unmapped in models.dev merges).
+      it "maps the xai models.dev provider key to the xai slug" do
+        Models.fetch_hook = -> { JSON.parse(fixture) }
+        Models.existing_models_hook = -> { [] of Model::Info }
+        Models.refresh!
+
+        model = Models.find("grok-test", "xai")
+        model.provider.should eq("xai")
+      ensure
+        Models.reset!
+      end
     end
 
     describe "#save_to_json / round-trip" do

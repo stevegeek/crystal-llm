@@ -44,6 +44,46 @@
         "limit": {
           "context": 8191
         }
+      },
+      "gpt-reasoning-options-test": {
+        "id": "gpt-reasoning-options-test",
+        "name": "GPT Reasoning Options Test",
+        "family": "gpt-test",
+        "release_date": "2025-06",
+        "tool_call": true,
+        "reasoning": false,
+        "reasoning_options": [
+          {"type": "effort", "values": ["low", "medium", "high"]}
+        ],
+        "modalities": {
+          "input": ["text"],
+          "output": ["text"]
+        },
+        "cost": {
+          "input": 1.0,
+          "output": 2.0
+        },
+        "limit": {
+          "context": 100000,
+          "output": 8000
+        }
+      },
+      "gpt-year-only-date-test": {
+        "id": "gpt-year-only-date-test",
+        "name": "GPT Year Only Date Test",
+        "release_date": "2023",
+        "modalities": {
+          "input": ["text"],
+          "output": ["text"]
+        },
+        "cost": {
+          "input": 1.0,
+          "output": 2.0
+        },
+        "limit": {
+          "context": 10000,
+          "output": 1000
+        }
       }
     }
   },
@@ -69,6 +109,29 @@
         "limit": {
           "context": 200000,
           "output": 8192
+        }
+      }
+    }
+  },
+  "xai": {
+    "id": "xai",
+    "name": "xAI",
+    "models": {
+      "grok-test": {
+        "id": "grok-test",
+        "name": "Grok Test",
+        "tool_call": true,
+        "modalities": {
+          "input": ["text"],
+          "output": ["text"]
+        },
+        "cost": {
+          "input": 0.5,
+          "output": 1.0
+        },
+        "limit": {
+          "context": 50000,
+          "output": 4000
         }
       }
     }

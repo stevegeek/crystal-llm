@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/providers/xai/models.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/providers/xai/models.rb @ ruby_llm 1.16.0
 #
 # xAI list-models parsing + the per-model capability/modality classification.
 #
@@ -10,35 +10,24 @@
 # - Time.at(created) -> Time.unix(created).
 # - The `capabilities` argument (the OpenAI Capabilities class passed by the
 #   completion pipeline) is intentionally unused — xAI classifies capabilities from
-#   its own IMAGE/VISION/REASONING model lists, exactly as ruby_llm's `_capabilities`
+#   its own image/video id-pattern predicates, exactly as ruby_llm's `_capabilities`
 #   parameter is unused. See xai.cr header.
 # - format_display_name: `model_id.tr('-', ' ').split.map(&:capitalize).join(' ')`
 #   -> split on '-', capitalize each word, join with space.
+#
+# ruby_llm 3f27b864 (Integrate models.dev metadata and provider cleanup): the
+# hard-coded IMAGE_MODELS/VISION_MODELS/REASONING_MODELS id lists are GONE —
+# vision/reasoning/function_calling/structured_output for chat models now come
+# from models.dev (xai joined MODELS_DEV_PROVIDER_MAP in models.cr). This live
+# list_models parse only self-classifies image/video-*generation* models by id
+# pattern (`image_model?`/`video_model?`); every other model gets a bare
+# `["streaming"]` fallback capability.
 require "json"
 require "../openai"
 
 module CrystalLLM
   module Providers
     class XAI < OpenAI
-      IMAGE_MODELS = %w[grok-2-image-1212]
-
-      VISION_MODELS = %w[
-        grok-2-vision-1212
-        grok-4-0709
-        grok-4-fast-non-reasoning
-        grok-4-fast-reasoning
-        grok-4-1-fast-non-reasoning
-        grok-4-1-fast-reasoning
-      ]
-
-      REASONING_MODELS = %w[
-        grok-3-mini
-        grok-4-0709
-        grok-4-fast-reasoning
-        grok-4-1-fast-reasoning
-        grok-code-fast-1
-      ]
-
       def models_url : String
         "models"
       end
@@ -87,26 +76,33 @@ module CrystalLLM
       end
 
       def modalities_for(model_id : String) : Model::Modalities
-        if IMAGE_MODELS.includes?(model_id)
-          Model::Modalities.new(input: ["text"], output: ["image"])
+        if image_model?(model_id)
+          Model::Modalities.new(input: %w[text image], output: ["image"])
+        elsif video_model?(model_id)
+          Model::Modalities.new(input: %w[text image video], output: ["video"])
         else
-          input = ["text"]
-          input << "image" if VISION_MODELS.includes?(model_id)
-          Model::Modalities.new(input: input, output: ["text"])
+          Model::Modalities.new(input: ["text"], output: ["text"])
         end
       end
 
       def capabilities_for(model_id : String) : Array(String)
-        return [] of String if IMAGE_MODELS.includes?(model_id)
+        return ["vision"] if image_model?(model_id) || video_model?(model_id)
 
-        caps = ["streaming", "function_calling", "structured_output"]
-        caps << "reasoning" if REASONING_MODELS.includes?(model_id)
-        caps << "vision" if VISION_MODELS.includes?(model_id)
-        caps
+        ["streaming"]
       end
 
       def format_display_name(model_id : String) : String
         model_id.split('-').map(&.capitalize).join(' ')
+      end
+
+      # ruby_llm: `model_id.match?(/\Agrok-(?:2-)?imagine-image/) || model_id == 'grok-2-image-1212'`.
+      def image_model?(model_id : String) : Bool
+        !!model_id.match(/\Agrok-(?:2-)?imagine-image/) || model_id == "grok-2-image-1212"
+      end
+
+      # ruby_llm: `model_id.match?(/\Agrok-(?:2-)?imagine-video/)`.
+      def video_model?(model_id : String) : Bool
+        !!model_id.match(/\Agrok-(?:2-)?imagine-video/)
       end
     end
   end

@@ -219,5 +219,53 @@ describe CrystalLLM::Providers::DeepSeek do
     it "is the class returned by .capabilities" do
       CrystalLLM::Providers::DeepSeek.capabilities.should eq(CrystalLLM::Providers::DeepSeek::Capabilities)
     end
+
+    # ported from lib/ruby_llm/providers/deepseek/capabilities.rb @ ruby_llm
+    # 1.16.0 (commit 3f27b864) — context_window_for/max_tokens_for are fixed
+    # constants (DeepSeek's registry rides on models.json, not per-model logic;
+    # these back-fill a live list_models response that omits limits/pricing).
+    it "reports fixed context_window/max_tokens defaults regardless of model_id" do
+      caps = CrystalLLM::Providers::DeepSeek::Capabilities
+      caps.context_window_for("deepseek-chat").should eq(1_000_000)
+      caps.context_window_for("deepseek-v4-pro").should eq(1_000_000)
+      caps.max_tokens_for("deepseek-chat").should eq(384_000)
+      caps.max_tokens_for("deepseek-v4-pro").should eq(384_000)
+    end
+
+    it "critical_capabilities_for: deepseek-chat gets only function_calling" do
+      caps = CrystalLLM::Providers::DeepSeek::Capabilities
+      caps.critical_capabilities_for("deepseek-chat").should eq(%w[function_calling])
+    end
+
+    it "critical_capabilities_for: deepseek-reasoner gets function_calling + reasoning (not structured_output)" do
+      caps = CrystalLLM::Providers::DeepSeek::Capabilities
+      caps.critical_capabilities_for("deepseek-reasoner").should eq(%w[function_calling reasoning])
+    end
+
+    it "critical_capabilities_for: deepseek-v4-* models get all three critical capabilities" do
+      caps = CrystalLLM::Providers::DeepSeek::Capabilities
+      caps.critical_capabilities_for("deepseek-v4-pro").should eq(%w[function_calling structured_output reasoning])
+      caps.critical_capabilities_for("deepseek-v4-lite").should eq(%w[function_calling structured_output reasoning])
+    end
+
+    it "pricing_for: DEFAULT_PRICES for non-pro models" do
+      caps = CrystalLLM::Providers::DeepSeek::Capabilities
+      pricing = CrystalLLM::Model::Pricing.new(caps.pricing_for("deepseek-chat"))
+      pricing.text_tokens.input.should eq(0.14)
+      pricing.text_tokens.output.should eq(0.28)
+      pricing.text_tokens.cache_read_input.should eq(0.0028)
+    end
+
+    it "pricing_for: PRO_PRICES for deepseek-v4-pro only" do
+      caps = CrystalLLM::Providers::DeepSeek::Capabilities
+      pricing = CrystalLLM::Model::Pricing.new(caps.pricing_for("deepseek-v4-pro"))
+      pricing.text_tokens.input.should eq(0.435)
+      pricing.text_tokens.output.should eq(0.87)
+      pricing.text_tokens.cache_read_input.should eq(0.003625)
+
+      # deepseek-v4-lite is NOT deepseek-v4-pro -> gets DEFAULT_PRICES, not PRO_PRICES.
+      lite_pricing = CrystalLLM::Model::Pricing.new(caps.pricing_for("deepseek-v4-lite"))
+      lite_pricing.text_tokens.input.should eq(0.14)
+    end
   end
 end

@@ -230,6 +230,57 @@ module CrystalLLM
       end
     end
 
+    # ---- normalize_models_dev_modalities --------------------------------------
+
+    # ruby_llm 3f27b864: modalities are intersected with the models.dev-owned
+    # vocab (`& MODELS_DEV_INPUT_MODALITIES` / `& MODELS_DEV_OUTPUT_MODALITIES`),
+    # not just `.compact`-ed — an unrecognized tag is dropped rather than passed
+    # through verbatim.
+    describe ".normalize_models_dev_modalities" do
+      it "keeps only the models.dev-allowed input/output modality tags" do
+        modalities = JSON.parse({
+          "input"  => ["text", "image", "bogus-input"],
+          "output" => ["text", "moderation", "nonsense-output"],
+        }.to_json)
+
+        result = Models.normalize_models_dev_modalities(modalities)
+        result["input"].should eq(["text", "image"])
+        result["output"].should eq(["text", "moderation"])
+      end
+
+      it "returns empty arrays when modalities is nil" do
+        result = Models.normalize_models_dev_modalities(nil)
+        result["input"].should eq([] of String)
+        result["output"].should eq([] of String)
+      end
+    end
+
+    # ---- models_dev_capabilities -----------------------------------------------
+
+    describe ".models_dev_capabilities" do
+      it "grants reasoning when the reasoning flag is true" do
+        data = JSON.parse({"reasoning" => true}.to_json).as_h
+        modalities = {"input" => [] of String, "output" => [] of String}
+        Models.models_dev_capabilities(data, modalities).should contain("reasoning")
+      end
+
+      # ruby_llm 3f27b864: `reasoning` if model_data[:reasoning] || model_data[:reasoning_options]
+      it "grants reasoning when reasoning_options is present even if the reasoning flag is false" do
+        data = JSON.parse({
+          "reasoning"         => false,
+          "reasoning_options" => [{"type" => "effort"}],
+        }.to_json).as_h
+        modalities = {"input" => [] of String, "output" => [] of String}
+        Models.models_dev_capabilities(data, modalities).should contain("reasoning")
+      end
+
+      it "does not grant reasoning when neither reasoning nor reasoning_options is present" do
+        data = {} of String => JSON::Any
+        modalities = {"input" => [] of String, "output" => [] of String}
+        Models.models_dev_capabilities(data, modalities).should_not contain("reasoning")
+      end
+    end
+
     # ---- blank_value? --------------------------------------------------------
 
     describe ".blank_value?" do
@@ -422,6 +473,31 @@ module CrystalLLM
         result.capabilities.sort!.should eq(%w[function_calling streaming structured_output])
       end
 
+      # ruby_llm 3f27b864 (MODELS_DEV_AUTHORITY_CAPABILITIES): models.dev is the
+      # authority for function_calling/structured_output/reasoning/vision — a
+      # provider's own claim to one of these is dropped unless models.dev also
+      # grants it. Non-authority provider capabilities (e.g. "streaming") still
+      # pass through unconditionally.
+      it "drops provider-only authority capabilities that models.dev does not confirm" do
+        md = Model::Info.build(id: "m1", provider: "openai",
+          capabilities: %w[structured_output])
+        prov = Model::Info.build(id: "m1", provider: "openai",
+          capabilities: %w[reasoning vision streaming])
+
+        result = Models.add_provider_metadata(md, prov)
+        result.capabilities.sort!.should eq(%w[streaming structured_output])
+      end
+
+      it "keeps a provider authority capability when models.dev also grants it" do
+        md = Model::Info.build(id: "m1", provider: "openai",
+          capabilities: %w[reasoning])
+        prov = Model::Info.build(id: "m1", provider: "openai",
+          capabilities: %w[reasoning streaming])
+
+        result = Models.add_provider_metadata(md, prov)
+        result.capabilities.sort!.should eq(%w[reasoning streaming])
+      end
+
       it "merges metadata: provider as base, models.dev overwrites" do
         md_meta = {"source" => JSON::Any.new("models.dev"), "md_key" => JSON::Any.new("md_val")}
         prov_meta = {"source" => JSON::Any.new("provider"), "prov_key" => JSON::Any.new("prov_val")}
@@ -487,14 +563,17 @@ module CrystalLLM
         md_model = Model::Info.build(id: "shared", provider: "openai",
           name: "", capabilities: %w[structured_output],
           metadata: {"source" => JSON::Any.new("models.dev")})
+        # "function_calling" is a models.dev-authority capability (ruby_llm
+        # 3f27b864): the provider's own claim to it is dropped since models.dev
+        # doesn't confirm it here. "streaming" (non-authority) still unions in.
         prov_model = Model::Info.build(id: "shared", provider: "openai",
-          name: "Provider Name", capabilities: %w[function_calling])
+          name: "Provider Name", capabilities: %w[function_calling streaming])
 
         result = Models.merge_models([prov_model], [md_model])
         merged = result.find { |info| info.id == "shared" }
         merged.should_not be_nil
         merged.try(&.name).should eq("Provider Name")
-        merged.try(&.capabilities).try(&.sort!).should eq(%w[function_calling structured_output])
+        merged.try(&.capabilities).try(&.sort!).should eq(%w[streaming structured_output])
       end
 
       it "result is sorted by [provider, id]" do

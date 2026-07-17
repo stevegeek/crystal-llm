@@ -16,7 +16,13 @@ private def info_data : Hash(String, JSON::Any)
     "modalities"        => {"input" => ["text", "image"], "output" => ["text"]},
     "capabilities"      => ["function_calling", "streaming", "vision", "structured_output"],
     "pricing"           => {"text_tokens" => {"standard" => {"input" => 2.50, "output" => 10.00}}},
-    "metadata"          => {"description" => "A test model"},
+    "metadata"          => {
+      "description"       => "A test model",
+      "reasoning_options" => [
+        {"type" => "effort", "values" => ["low", "medium", "high"]},
+        {"type" => "budget_tokens", "min" => 1024},
+      ],
+    },
   }.to_json).as_h
 end
 
@@ -72,6 +78,7 @@ describe CrystalLLM::Model::Info do
       )
       minimal.capabilities.should eq([] of String)
       minimal.metadata.should eq({} of String => JSON::Any)
+      minimal.reasoning_options.should eq([] of Hash(String, JSON::Any))
       minimal.modalities.input.should eq([] of String)
     end
   end
@@ -120,6 +127,97 @@ describe CrystalLLM::Model::Info do
     it "returns false when image is not in input modalities" do
       text_only = info_with({"modalities" => jany({"input" => ["text"], "output" => ["text"]})})
       text_only.supports_vision?.should be_false
+    end
+  end
+
+  # ported from ruby_llm's info_spec.rb "#reasoning_options" (@ 1.16.0, commit
+  # 3f27b864). ruby_llm compares symbol-keyed Hashes; the port has no runtime
+  # symbols, so expectations use String-keyed Hash(String, JSON::Any) built via
+  # `jany`.
+  describe "#reasoning_options" do
+    it "normalizes metadata reasoning options" do
+      info = CrystalLLM::Model::Info.new(info_data)
+      info.reasoning_options.should eq([
+        {"type" => jany("effort"), "values" => jany(["low", "medium", "high"])},
+        {"type" => jany("budget_tokens"), "min" => jany(1024)},
+      ])
+    end
+
+    it "accepts top-level reasoning options and stores them in metadata" do
+      top_level_info = info_with({
+        "reasoning_options" => jany([{"type" => "effort", "values" => ["low", "high"]}]),
+        "metadata"          => jany({} of String => JSON::Any),
+      })
+
+      top_level_info.reasoning_options.should eq([
+        {"type" => jany("effort"), "values" => jany(["low", "high"])},
+      ])
+      top_level_info.metadata["reasoning_options"]?.should eq(jany([
+        {"type" => "effort", "values" => ["low", "high"]},
+      ]))
+    end
+
+    it "accepts metadata reasoning options when no top-level field is present" do
+      legacy_info = info_with({
+        "metadata" => jany({
+          "reasoning_options" => [{"type" => "effort", "values" => ["low", "high"]}],
+        }),
+      })
+
+      legacy_info.reasoning_options.should eq([
+        {"type" => jany("effort"), "values" => jany(["low", "high"])},
+      ])
+    end
+
+    it "prefers top-level reasoning options over metadata when both are present" do
+      info = info_with({
+        "reasoning_options" => jany([{"type" => "effort", "values" => ["low", "high"]}]),
+        "metadata"          => jany({
+          "reasoning_options" => [{"type" => "budget_tokens", "min" => 1024}],
+        }),
+      })
+
+      info.reasoning_options.should eq([
+        {"type" => jany("effort"), "values" => jany(["low", "high"])},
+      ])
+    end
+
+    it "normalizes option values to strings (e.g. JSON numbers)" do
+      numeric_info = info_with({
+        "metadata" => jany({
+          "reasoning_options" => [{"type" => "effort", "values" => [1, 2, 3]}],
+        }),
+      })
+
+      numeric_info.reasoning_options.should eq([
+        {"type" => jany("effort"), "values" => jany(["1", "2", "3"])},
+      ])
+    end
+
+    it "drops non-Hash entries" do
+      mixed_info = info_with({
+        "metadata" => jany({
+          "reasoning_options" => [{"type" => "effort", "values" => ["low"]}, "garbage", 42],
+        }),
+      })
+
+      mixed_info.reasoning_options.should eq([
+        {"type" => jany("effort"), "values" => jany(["low"])},
+      ])
+    end
+
+    it "returns option values by type" do
+      info = CrystalLLM::Model::Info.new(info_data)
+      info.reasoning_option_values("effort").should eq(["low", "medium", "high"])
+      # budget_tokens has no "values" key -> []
+      info.reasoning_option_values("budget_tokens").should eq([] of String)
+      info.reasoning_option_values("nonexistent").should eq([] of String)
+    end
+
+    it "#reasoning_option finds by type and returns nil when absent" do
+      info = CrystalLLM::Model::Info.new(info_data)
+      info.reasoning_option("effort").should eq({"type" => jany("effort"), "values" => jany(["low", "medium", "high"])})
+      info.reasoning_option("nonexistent").should be_nil
     end
   end
 
@@ -232,6 +330,14 @@ describe CrystalLLM::Model::Info do
       hash[:modalities].as(JSON::Any).as_h?.should_not be_nil
       hash[:pricing].as(JSON::Any).as_h?.should_not be_nil
       hash[:capabilities].as(JSON::Any).as_a.map(&.as_s).should contain("function_calling")
+      # reasoning_options is not a top-level key (ruby_llm parity) — it lives
+      # inside metadata (store_reasoning_options_metadata).
+      hash.has_key?(:reasoning_options).should be_false
+      metadata_hash = hash[:metadata].as(JSON::Any).as_h
+      metadata_hash["reasoning_options"].should eq(jany([
+        {"type" => "effort", "values" => ["low", "medium", "high"]},
+        {"type" => "budget_tokens", "min" => 1024},
+      ]))
     end
   end
 end

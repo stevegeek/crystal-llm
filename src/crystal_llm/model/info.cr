@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/model/info.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/model/info.rb @ ruby_llm 1.16.0
 require "json"
 require "./modalities"
 require "./pricing"
@@ -22,6 +22,10 @@ module CrystalLLM
     #   this class (not in Utils); `to_time` normalizes to UTC.
     # - DEFERRED: `provider_class` is not wired — returns nil; `label` therefore
     #   falls back to the raw provider slug rather than the provider's display name.
+    # - `reasoning_options` (ruby_llm 3f27b864): ruby_llm normalizes into an
+    #   Array of Symbol-keyed Hashes (`transform_keys(&:to_sym)`). The port has no
+    #   runtime symbols, so it stays `Array(Hash(String, JSON::Any))` — String
+    #   keys throughout, per design §11.
     class Info
       getter id : String?
       getter name : String?
@@ -35,6 +39,7 @@ module CrystalLLM
       getter capabilities : Array(String)
       getter pricing : Pricing
       getter metadata : Hash(String, JSON::Any)
+      getter reasoning_options : Array(Hash(String, JSON::Any))
 
       # Create a default model with assumed capabilities (ruby_llm's `.default`).
       def self.default(model_id : String, provider : String) : Info
@@ -61,7 +66,13 @@ module CrystalLLM
         @modalities = Modalities.new(hash_field(data["modalities"]?))
         @capabilities = string_array(data["capabilities"]?)
         @pricing = Pricing.new(hash_field(data["pricing"]?))
-        @metadata = hash_field(data["metadata"]?)
+        # `.dup`: store_reasoning_options_metadata mutates @metadata in place
+        # (delete + re-set "reasoning_options"); dup avoids corrupting a Hash
+        # the caller (or a shared parsed JSON::Any) still holds a reference to
+        # (ruby_llm: `data[:metadata]&.dup`).
+        @metadata = hash_field(data["metadata"]?).dup
+        @reasoning_options = normalize_reasoning_options(reasoning_options_from(data))
+        store_reasoning_options_metadata
       end
 
       # Keyword convenience constructor for callers holding native values.
@@ -78,12 +89,13 @@ module CrystalLLM
         capabilities : Array(String) = [] of String,
         pricing : Pricing = Pricing.new,
         metadata : Hash(String, JSON::Any) = {} of String => JSON::Any,
+        reasoning_options : Array(Hash(String, JSON::Any)) = [] of Hash(String, JSON::Any),
       ) : Info
         info = allocate
         info.initialize_fields(
           id, name, provider, family, created_at, context_window,
           max_output_tokens, knowledge_cutoff, modalities, capabilities,
-          pricing, metadata
+          pricing, metadata, reasoning_options
         )
         info
       end
@@ -95,6 +107,7 @@ module CrystalLLM
         @knowledge_cutoff : Time?, @modalities : Modalities,
         @capabilities : Array(String), @pricing : Pricing,
         @metadata : Hash(String, JSON::Any),
+        @reasoning_options : Array(Hash(String, JSON::Any)),
       )
       end
 
@@ -117,6 +130,26 @@ module CrystalLLM
 
       def reasoning? : Bool
         supports?("reasoning")
+      end
+
+      # Finds a reasoning-options entry by `type` (e.g. "effort", "budget_tokens").
+      def reasoning_option(type : String) : Hash(String, JSON::Any)?
+        reasoning_options.find { |option| option["type"]?.try(&.as_s?) == type }
+      end
+
+      # Returns the `values` array (as Strings) for the reasoning option of the
+      # given `type`, or `[]` when the option or its `values` key is absent.
+      def reasoning_option_values(type : String) : Array(String)
+        option = reasoning_option(type)
+        return [] of String unless option
+
+        values = option["values"]?
+        return [] of String unless values
+
+        arr = values.as_a?
+        return [] of String unless arr
+
+        arr.compact_map(&.as_s?)
       end
 
       def citations? : Bool
@@ -297,6 +330,68 @@ module CrystalLLM
         arr = value.as_a?
         return [] of String if arr.nil?
         arr.map { |element| element.as_s? || element.raw.to_s }
+      end
+
+      # ruby_llm: `data[:reasoning_options] || metadata[:reasoning_options] || metadata['reasoning_options']`.
+      # The port's metadata is always String-keyed, so there is no separate
+      # string/symbol variant to check — `data["reasoning_options"]` (the
+      # top-level wire field) takes priority over `metadata["reasoning_options"]`.
+      # A present-but-JSON-null value is treated as absent (Ruby `||` treats nil
+      # as falsy; a JSON::Any wrapping nil is NOT Crystal `nil`, so this must be
+      # checked explicitly).
+      private def reasoning_options_from(data : Hash(String, JSON::Any)) : JSON::Any?
+        top_level = data["reasoning_options"]?
+        return top_level if top_level && !top_level.raw.nil?
+
+        from_metadata = @metadata["reasoning_options"]?
+        return from_metadata if from_metadata && !from_metadata.raw.nil?
+
+        nil
+      end
+
+      # ruby_llm: `return unless reasoning_options.any?; metadata.delete('reasoning_options'); metadata[:reasoning_options] = reasoning_options`.
+      private def store_reasoning_options_metadata : Nil
+        return if reasoning_options.empty?
+
+        @metadata.delete("reasoning_options")
+        @metadata["reasoning_options"] = JSON::Any.new(reasoning_options.map { |option| JSON::Any.new(option) })
+      end
+
+      # ruby_llm: `Array(options).filter_map { |option| next unless option.is_a?(Hash); ...; normalized }`.
+      # Keeps only Hash-shaped entries; stringifies `type` when present, and
+      # coerces `values` (if present) to an Array of Strings.
+      private def normalize_reasoning_options(options : JSON::Any?) : Array(Hash(String, JSON::Any))
+        arr = options.try(&.as_a?)
+        return [] of Hash(String, JSON::Any) unless arr
+
+        arr.compact_map do |option|
+          obj = option.as_h?
+          next nil unless obj
+
+          normalized = obj.dup
+          if type_val = normalized["type"]?
+            normalized["type"] = JSON::Any.new(reasoning_scalar_to_s(type_val)) unless type_val.raw.nil?
+          end
+          if normalized.has_key?("values")
+            normalized["values"] = normalize_reasoning_values(normalized["values"])
+          end
+          normalized
+        end
+      end
+
+      # ruby_llm: `Array(normalized[:values]).map(&:to_s)`.
+      private def normalize_reasoning_values(value : JSON::Any) : JSON::Any
+        if arr = value.as_a?
+          JSON::Any.new(arr.map { |element| JSON::Any.new(reasoning_scalar_to_s(element)) })
+        elsif value.raw.nil?
+          JSON::Any.new([] of JSON::Any)
+        else
+          JSON::Any.new([JSON::Any.new(reasoning_scalar_to_s(value))])
+        end
+      end
+
+      private def reasoning_scalar_to_s(value : JSON::Any) : String
+        value.as_s? || value.raw.to_s
       end
     end
   end
