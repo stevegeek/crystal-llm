@@ -127,6 +127,34 @@ class ChatSpecHaltingTool < CrystalLLM::Tool
   end
 end
 
+# A tool that records how many instances run concurrently. Under the fibers-only
+# concurrency mode, two of these overlap (each yields at `sleep`), so
+# `max_running` reaches 2. `delay` staggers completion so the on_result callback
+# order (completion order) is deterministic.
+class ChatSpecProbeTool < CrystalLLM::Tool
+  description "Records concurrent execution"
+  param label : String, "the label to echo back", required: true              # ameba:disable Lint/UselessAssign
+  param delay : Float64, "seconds to sleep before finishing", required: false # ameba:disable Lint/UselessAssign
+
+  class_property running : Int32 = 0
+  class_property max_running : Int32 = 0
+
+  def self.reset! : Nil
+    self.running = 0
+    self.max_running = 0
+  end
+
+  def dispatch(args : Hash(String, JSON::Any)) : CrystalLLM::ToolResult
+    self.class.running += 1
+    self.class.max_running = self.class.running if self.class.running > self.class.max_running
+    seconds = args["delay"]?.try(&.as_f?) || 0.01
+    sleep seconds.seconds
+    "finished #{args["label"].as_s}"
+  ensure
+    self.class.running -= 1
+  end
+end
+
 private def assistant(text : String) : CrystalLLM::Message
   CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, content: text)
 end
@@ -296,6 +324,92 @@ describe CrystalLLM::Chat do
       first["choice"].should eq("chat_spec_echo")
       # forced choice was reset before the second completion
       second["choice"].should be_nil
+    end
+  end
+
+  describe "tool concurrency preferences" do
+    it "defaults to sequential (nil concurrency)" do
+      new_chat.concurrency.should be_nil
+    end
+
+    it "stores concurrency: true as the fibers mode (Crystal divergence from :threads)" do
+      new_chat.with_tools(concurrency: true).concurrency.should eq("fibers")
+    end
+
+    it "accepts the explicit fibers mode string" do
+      new_chat.with_tools(concurrency: "fibers").concurrency.should eq("fibers")
+    end
+
+    it "clears concurrency with false" do
+      chat = new_chat.with_tools(concurrency: true)
+      chat.with_tools(concurrency: false).concurrency.should be_nil
+    end
+
+    it "treats a blank/whitespace concurrency string as disabled" do
+      # Carry-over from Task 2: the non-nilable Bool|String config option can't get
+      # the config DSL's blank-string-to-nil treatment, so normalize handles it here.
+      new_chat.with_tools(concurrency: "  ").concurrency.should be_nil
+    end
+
+    it "raises for threads (the Ruby-only mode) naming the available modes" do
+      expect_raises(ArgumentError, /Unknown tool concurrency.*fibers/) do
+        new_chat.with_tools(concurrency: "threads")
+      end
+    end
+
+    it "raises for an unknown concurrency mode" do
+      expect_raises(ArgumentError, /Unknown tool concurrency/) do
+        new_chat.with_tools(concurrency: "warp_speed")
+      end
+    end
+
+    it "uses the configured tool concurrency by default" do
+      original = CrystalLLM.config.tool_concurrency
+      CrystalLLM.config.tool_concurrency = true
+      new_chat.concurrency.should eq("fibers")
+    ensure
+      CrystalLLM.config.tool_concurrency = original || false
+    end
+
+    it "lets a chat override the configured tool concurrency" do
+      original = CrystalLLM.config.tool_concurrency
+      CrystalLLM.config.tool_concurrency = true
+      new_chat.with_tools(concurrency: false).concurrency.should be_nil
+    ensure
+      CrystalLLM.config.tool_concurrency = original || false
+    end
+  end
+
+  describe "concurrent tool execution" do
+    before_each { ChatSpecProbeTool.reset! }
+
+    it "executes multiple tool calls concurrently, appending results in completion order" do
+      probe = ChatSpecProbeTool.new
+      tool_calls = {
+        "call_1" => CrystalLLM::ToolCall.new(id: "call_1", name: probe.name,
+          arguments: {"label" => JSON::Any.new("slow"), "delay" => JSON::Any.new(0.05)}),
+        "call_2" => CrystalLLM::ToolCall.new(id: "call_2", name: probe.name,
+          arguments: {"label" => JSON::Any.new("fast"), "delay" => JSON::Any.new(0.01)}),
+      }
+      ChatSpecFakeProvider.scripted = [
+        CrystalLLM::Message.new(role: CrystalLLM::Role::Assistant, tool_calls: tool_calls),
+        assistant("done"),
+      ]
+      chat = new_chat.with_tool(probe, concurrency: true)
+
+      response = chat.ask("run the tools").as(CrystalLLM::Message)
+
+      response.content.should eq("done")
+      chat.concurrency.should eq("fibers")
+      # Both probes overlapped.
+      ChatSpecProbeTool.max_running.should eq(2)
+
+      tool_messages = chat.messages.select(&.role.tool?)
+      # Results are appended as each finishes: the fast call (call_2) lands first.
+      tool_messages.map(&.tool_call_id).should eq(["call_2", "call_1"])
+      tool_messages.map(&.content).should eq(["finished fast", "finished slow"])
+      # user, assistant(tool_calls), 2 tool results, assistant(done)
+      chat.messages.size.should eq(5)
     end
   end
 

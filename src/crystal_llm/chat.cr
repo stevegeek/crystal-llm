@@ -1,4 +1,4 @@
-# ported from lib/ruby_llm/chat.rb @ ruby_llm 1.15.0
+# ported from lib/ruby_llm/chat.rb @ ruby_llm 1.16.0
 #
 # The Chat builder + completion flow: a chainable conversation object that
 # accumulates messages, tools, and per-call options, then drives the provider
@@ -59,6 +59,7 @@ require "./message"
 require "./content"
 require "./tool"
 require "./tool_call"
+require "./tool_concurrency"
 require "./thinking"
 require "./cost"
 require "./schema"
@@ -83,6 +84,9 @@ module CrystalLLM
     # "none" / "required") is forwarded to the provider via `complete_once` →
     # `Provider#complete`. `:calls` is the call limit as a String? ("one"/"many").
     getter tool_prefs : Hash(String, String?)
+    # The tool-concurrency mode (`normalize_tool_concurrency`'d): nil = sequential,
+    # or a supported mode string ("fibers"). ruby_llm's `attr_reader :concurrency`.
+    getter concurrency : String?
     getter params : Hash(String, JSON::Any)
     getter headers : Hash(String, String)
     getter schema : JSON::Any?
@@ -118,6 +122,7 @@ module CrystalLLM
       @messages = [] of Message
       @tools = {} of String => Tool
       @tool_prefs = {"choice" => nil, "calls" => nil} of String => String?
+      @concurrency = normalize_tool_concurrency(@config.tool_concurrency)
       @params = {} of String => JSON::Any
       @headers = {} of String => String
       @schema = nil
@@ -190,21 +195,33 @@ module CrystalLLM
       self
     end
 
-    # Registers a tool, keyed by its `name`. `choice`/`calls` update tool_prefs.
-    def with_tool(tool : Tool?, choice : String? = nil, calls : String? = nil) : self
+    # Registers a tool, keyed by its `name`. `choice`/`calls` update tool_prefs;
+    # `concurrency` updates the concurrency mode (defaulting to the current one, so
+    # passing nothing changes nothing).
+    def with_tool(tool : Tool?, choice : String? = nil, calls : String? = nil,
+                  concurrency : Bool | String | Nil = @concurrency) : self
       if t = tool
         @tools[t.name] = t
       end
       update_tool_options(choice, calls)
+      update_tool_concurrency(concurrency)
       self
     end
 
     # Registers many tools. `replace: true` clears existing tools first.
-    def with_tools(*tools : Tool?, replace : Bool = false,
-                   choice : String? = nil, calls : String? = nil) : self
+    #
+    # The splat is intentionally UNTYPED (not `*tools : Tool?`): a type-restricted
+    # splat cannot be called with zero positional arguments in Crystal, and
+    # ruby_llm's `with_tools(concurrency: …)` (no tools, just setting the mode) is a
+    # supported call. Each element is still type-checked at the `with_tool(tool)`
+    # call below, which takes a `Tool?`.
+    def with_tools(*tools, replace : Bool = false,
+                   choice : String? = nil, calls : String? = nil,
+                   concurrency : Bool | String | Nil = @concurrency) : self
       @tools.clear if replace
       tools.each { |tool| with_tool(tool) if tool }
       update_tool_options(choice, calls)
+      update_tool_concurrency(concurrency)
       self
     end
 
@@ -692,7 +709,7 @@ module CrystalLLM
     # ---- Tool-call loop ----------------------------------------------------
 
     private def handle_tool_calls(response : Message) : Message | Tool::Halt
-      halt_result = run_tool_calls(response)
+      halt_result = dispatch_tool_calls(response.tool_calls)
       reset_tool_choice if forced_tool_choice?
       # ruby_llm: `halt_result || complete(&)` — return the Tool::Halt result
       # itself (no follow-up completion) when a tool halted, else continue the loop.
@@ -704,7 +721,7 @@ module CrystalLLM
     end
 
     private def handle_tool_calls(response : Message, &block : CrystalLLM::Chunk ->) : Message | Tool::Halt
-      halt_result = run_tool_calls(response)
+      halt_result = dispatch_tool_calls(response.tool_calls)
       reset_tool_choice if forced_tool_choice?
       if halt = halt_result
         halt
@@ -713,36 +730,82 @@ module CrystalLLM
       end
     end
 
-    # Executes each tool call in the response, appending a tool-role result
-    # message for each. Returns the `Tool::Halt` result if a tool requested a halt
-    # (mirroring ruby_llm's `halt_result = result`), else nil (signalling the loop
-    # should continue to another completion). The halt content is STILL appended as
-    # a tool-role message before returning.
-    private def run_tool_calls(response : Message) : Tool::Halt?
+    # Selects sequential vs concurrent tool execution based on `@concurrency`,
+    # mirroring ruby_llm's inline `if concurrency` branch in `handle_tool_calls`.
+    private def dispatch_tool_calls(tool_calls : Hash(String, ToolCall)?) : Tool::Halt?
+      if concurrency
+        handle_concurrent_tool_calls(tool_calls)
+      else
+        handle_sequential_tool_calls(tool_calls)
+      end
+    end
+
+    # Sequential execution — today's exact callback order. Executes each tool call
+    # in turn, appending a tool-role result message for each. Returns the
+    # `Tool::Halt` result if a tool requested a halt (mirroring ruby_llm's
+    # `halt_result = result`), else nil. The halt content is STILL appended.
+    private def handle_sequential_tool_calls(tool_calls : Hash(String, ToolCall)?) : Tool::Halt?
       halt_result : Tool::Halt? = nil
-      tool_calls = response.tool_calls
       return nil unless tool_calls
 
       tool_calls.each_value do |tool_call|
         run_message_callbacks("before_message", nil)
-        run_tool_call_callbacks(tool_call)
-        result = execute_tool(tool_call)
-        run_tool_result_callbacks(result)
-
-        if result.is_a?(Tool::Halt)
-          tool_payload = result.content
-        else
-          tool_payload = result
-        end
-
-        content = content_for_message(tool_payload)
-        message = add_message(role: Role::Tool, content: content, tool_call_id: tool_call.id)
-        run_message_callbacks("after_message", message)
-
+        result = execute_tool_with_callbacks(tool_call)
+        add_tool_result_message(tool_call, result)
         halt_result = result if result.is_a?(Tool::Halt)
       end
 
       halt_result
+    end
+
+    # Concurrent execution. `before_tool_call`/`after_tool_result` run inside each
+    # worker (via `execute_tool_with_callbacks`); `before_message` +
+    # `add_tool_result_message` (which fires `after_message`) run in the on_result
+    # callback, serialized in COMPLETION order on the calling fiber. A `Tool::Halt`
+    # still records `halt_result` but does not cancel in-flight calls.
+    private def handle_concurrent_tool_calls(tool_calls : Hash(String, ToolCall)?) : Tool::Halt?
+      halt_result : Tool::Halt? = nil
+      return nil unless tool_calls
+
+      execute_tools_concurrently(tool_calls) do |tool_call, result|
+        run_message_callbacks("before_message", nil)
+        add_tool_result_message(tool_call, result)
+        halt_result = result if result.is_a?(Tool::Halt)
+      end
+
+      halt_result
+    end
+
+    # Runs the tool calls through `ToolConcurrency.run`, yielding `(tool_call,
+    # result)` to `on_result` as each finishes. The block is captured into a Proc
+    # so it can serialize message appends on the calling fiber.
+    private def execute_tools_concurrently(tool_calls : Hash(String, ToolCall),
+                                           &on_result : ToolCall, ToolResult ->) : Nil
+      mode = concurrency
+      return unless mode
+      ToolConcurrency.run(mode, tool_calls, on_result: on_result) do |tool_call|
+        execute_tool_with_callbacks(tool_call)
+      end
+    end
+
+    # Runs `before_tool_call`, executes the tool, runs `after_tool_result`, and
+    # returns the result. Shared by the sequential and concurrent paths (the latter
+    # runs this inside each worker fiber).
+    private def execute_tool_with_callbacks(tool_call : ToolCall) : ToolResult
+      run_tool_call_callbacks(tool_call)
+      result = execute_tool(tool_call)
+      run_tool_result_callbacks(result)
+      result
+    end
+
+    # Appends a tool-role result message (a `Tool::Halt` renders its wrapped
+    # content) and fires `after_message`. Returns the appended message.
+    private def add_tool_result_message(tool_call : ToolCall, result : ToolResult) : Message
+      tool_payload = result.is_a?(Tool::Halt) ? result.content : result
+      content = content_for_message(tool_payload)
+      message = add_message(role: Role::Tool, content: content, tool_call_id: tool_call.id)
+      run_message_callbacks("after_message", message)
+      message
     end
 
     private def execute_tool(tool_call : ToolCall) : ToolResult
@@ -886,6 +949,36 @@ module CrystalLLM
       end
 
       @tool_prefs["calls"] = normalize_calls(calls) unless calls.nil?
+    end
+
+    private def update_tool_concurrency(concurrency : Bool | String | Nil) : Nil
+      @concurrency = normalize_tool_concurrency(concurrency)
+    end
+
+    # `nil`/`false` → disabled (nil); `true` → the sole Crystal mode ("fibers", a
+    # divergence from ruby_llm's `:threads` default — Crystal has no thread mode); a
+    # supported mode string passes through; anything else raises. A blank/whitespace
+    # string normalizes to nil (disabled): the config DSL strips blank strings to nil
+    # for every option, but `Configuration#tool_concurrency` is a non-nilable
+    # `Bool | String` so it can't carry that treatment — it lands here instead.
+    private def normalize_tool_concurrency(value : Bool | String | Nil) : String?
+      case value
+      when Nil
+        nil
+      when Bool
+        # ruby_llm maps `true` → `:threads`; the Crystal port has only fibers.
+        value ? "fibers" : nil
+      else
+        # A blank/whitespace string disables (see the note above); a supported mode
+        # passes through; anything else raises.
+        return nil if value.strip.empty?
+        return value if ToolConcurrency.supported?(value)
+
+        raise ArgumentError.new(
+          "Unknown tool concurrency: #{value.inspect}. " \
+          "Available modes: #{ToolConcurrency.modes.join(", ")}"
+        )
+      end
     end
 
     private def normalize_calls(calls : String) : String
