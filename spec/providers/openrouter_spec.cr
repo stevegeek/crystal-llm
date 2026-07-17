@@ -192,6 +192,37 @@ describe CrystalLLM::Providers::OpenRouter do
       end
     end
 
+    # ruby_llm 1.16.0 / 32f70eb3: `parse_completion_response` guarded against an
+    # *empty* body (`data.empty?`) but crashed on a *nil* body (Faraday's JSON
+    # middleware can leave `response.body` nil); the fix widened the guard to
+    # `data.nil? || data.empty?` and returns nil gracefully either way.
+    #
+    # `parse_completion_response` here is inherited unchanged from OpenAI
+    # (documented at the top of openai/chat.cr — identical wire shape); OpenRouter
+    # has no override in this port. `Crest::Response#body` (crest/response.cr,
+    # `delegate body, to: http_client_res`) is a non-nilable `String` — there is no
+    # Crystal equivalent of Faraday's nilable body, so the `data.nil?` half of the
+    # upstream fix is structurally unreachable here. `Message` is also non-nilable
+    # in this port (ruby_llm's parse_completion_response can return nil; the port's
+    # signature can't), so "return nil gracefully" becomes "raise a CrystalLLM::Error
+    # gracefully" instead of returning — verifying that's still true (no unhandled
+    # JSON::ParseException / nil-deref crash) rather than re-porting a nil-body
+    # guard that can't occur.
+    it "raises a graceful error instead of crashing on an empty response body" do
+      provider = configured_openrouter
+      expect_raises(CrystalLLM::Error, "Empty response from OpenAI") do
+        provider.parse_completion_response(build_response(200, ""))
+      end
+    end
+
+    it "raises a graceful error instead of crashing when the response has no choices" do
+      body = %({"model": "openai/gpt-4o", "usage": {"prompt_tokens": 1, "completion_tokens": 0, "total_tokens": 1}})
+      provider = configured_openrouter
+      expect_raises(CrystalLLM::Error, "OpenAI response had no message") do
+        provider.parse_completion_response(build_response(200, body))
+      end
+    end
+
     it "attaches thinking from a reasoning String" do
       body = <<-JSON
       {
