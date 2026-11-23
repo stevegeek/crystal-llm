@@ -74,7 +74,10 @@ module CrystalLLM
       Connection.guard_external_network!(full_url(url))
       hdrs = merge_headers(headers)
       begin
-        Crest.post(full_url(url), payload, headers: hdrs, json: false, read_timeout: @config.request_timeout.seconds) do |response|
+        Crest.post(full_url(url), payload, headers: hdrs, json: false,
+          read_timeout: @config.request_timeout.seconds,
+          write_timeout: @config.request_timeout.seconds,
+          connect_timeout: @config.request_timeout.seconds) do |response|
           block.call(response)
         end
       rescue ex : Crest::RequestFailed
@@ -90,9 +93,15 @@ module CrystalLLM
       begin
         case method
         when :get
-          Crest.get(url, headers: hdrs, read_timeout: @config.request_timeout.seconds)
+          Crest.get(url, headers: hdrs,
+            read_timeout: @config.request_timeout.seconds,
+            write_timeout: @config.request_timeout.seconds,
+            connect_timeout: @config.request_timeout.seconds)
         else
-          Crest.post(url, payload || "", headers: hdrs, json: false, read_timeout: @config.request_timeout.seconds)
+          Crest.post(url, payload || "", headers: hdrs, json: false,
+            read_timeout: @config.request_timeout.seconds,
+            write_timeout: @config.request_timeout.seconds,
+            connect_timeout: @config.request_timeout.seconds)
         end
       rescue ex : Crest::RequestFailed
         map_error(ex.response)
@@ -107,7 +116,10 @@ module CrystalLLM
       begin
         # `multipart: true` forces a multipart body even if no value is an IO
         # (so a fields-only edit form still posts as form-data, matching ruby_llm).
-        Crest.post(url, form, headers: hdrs, multipart: true, read_timeout: @config.request_timeout.seconds)
+        Crest.post(url, form, headers: hdrs, multipart: true,
+          read_timeout: @config.request_timeout.seconds,
+          write_timeout: @config.request_timeout.seconds,
+          connect_timeout: @config.request_timeout.seconds)
       rescue ex : Crest::RequestFailed
         map_error(ex.response)
       end
